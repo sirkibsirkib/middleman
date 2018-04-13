@@ -38,6 +38,7 @@ use std::{
 
 pub trait Message: Serialize + DeserializeOwned {}
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CourierError {
 	Dead, ReadNotReady, BackoffPls, 
 }
@@ -67,13 +68,17 @@ fn main() {
     let (h, addr) = mio_echoserver();
 	let stream = TcpStream::connect(&addr).expect("x");
     let courier = OneThread::new(stream);
+    println!(">> GO call started");
     go(courier);
+    println!(">> GO call finished");
     h.join().is_ok();
-    
 }
 
-fn go<C: Courier>(courier: C) {
-	println!("Hello World!");
+fn go<C: Courier>(mut courier: C) {
+	let pause = time::Duration::from_millis(500);
+	thread::sleep(pause);
+	let r1 = courier.send(&Msg(5, "Danky".to_owned()));
+	println!("r1 {:?}", &r1);
 }
 
 
@@ -140,14 +145,27 @@ impl Courier for OneThread {
 		M: Message,
 	{
 		let encoded: Vec<u8> = bincode::serialize(&m).expect("nawww");
+		println!("about to send {:?}", &encoded);
 		let len = encoded.len();
 		if len > ::std::u32::MAX as usize {
 			panic!("`send()` can only handle payloads up to std::u32::MAX");
 		}
 		let mut encoded_len = vec![];
 		encoded_len.write_u32::<LittleEndian>(len as u32)?;
-		self.stream.write(&encoded_len)?;
-		self.stream.write(&encoded)?;
+		loop {
+			match self.stream.write(&encoded_len) {
+				Err(ref e) if e.kind() == ErrorKind::WouldBlock => print!("a"),
+				Ok(o) => break,
+				Err(e) => return Err(CourierError::from(e)),
+			} 
+		}
+		loop {
+			match self.stream.write(&encoded) {
+				Err(ref e) if e.kind() == ErrorKind::WouldBlock => print!("b"),
+				Ok(o) => break,
+				Err(e) => return Err(CourierError::from(e)),
+			} 
+		}
 		Ok(())
 	}
 
@@ -291,7 +309,7 @@ fn mio_echoserver() -> (ThreadHandle, SocketAddr) {
 			let h = thread::Builder::new()
 			.name(format!("echo_server_listener"))
 			.spawn(move || {
-				println!("Listener thread away!");
+				println!("Listener started at addr {:?}", &addr);
 				let poll = Poll::new().unwrap();
 				let mut events = Events::with_capacity(32);
 				poll.register(&listener, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
