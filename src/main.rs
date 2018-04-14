@@ -44,24 +44,49 @@ pub trait Message: Serialize + DeserializeOwned {}
 
 #[derive(Debug)]
 pub enum TryRecvError {
-	Io(io::Error),
+	Fatal(FatalError),
 	ReadNotReady,
+}
+#[derive(Debug)]
+pub enum FatalError {
+	Io(io::Error),
+	Bincode(bincode::ErrorKind),
 }
 impl std::convert::From<io::Error> for TryRecvError {
 	fn from(e: io::Error) -> Self {
 		if e.kind() == ErrorKind::WouldBlock {
 			TryRecvError::ReadNotReady
 		} else {
-			TryRecvError::Io(e)
+			TryRecvError::Fatal(FatalError::Io(e))
 		}
+	}
+}
+impl std::convert::From<bincode::ErrorKind> for TryRecvError {
+	fn from(e: bincode::ErrorKind) -> Self {
+		TryRecvError::Fatal(FatalError::Bincode(e))
+	}
+}
+impl std::convert::From<io::Error> for FatalError {
+	fn from(e: io::Error) -> Self {
+		FatalError::Io(e)
+	}
+}
+impl std::convert::From<bincode::ErrorKind> for FatalError {
+	fn from(e: bincode::ErrorKind) -> Self {
+		FatalError::Bincode(e)
+	}
+}
+impl std::convert::From<std::boxed::Box<bincode::ErrorKind>> for TryRecvError {
+	fn from(e: std::boxed::Box<bincode::ErrorKind>) -> Self {
+		TryRecvError::Fatal(FatalError::Bincode(*e))
 	}
 }
 
 pub trait Courier {
 	fn try_recv<M: Message>(&mut self) -> Result<M, TryRecvError>;
-	fn recv<M: Message>(&mut self) -> Result<M, io::Error>;
-	fn send<M: Message>(&mut self, m: &M) -> Result<(), io::Error>;
-	fn send_all<'m, I, M>(&'m mut self, m_iter: I) -> (usize, Result<(), io::Error>)
+	fn recv<M: Message>(&mut self) -> Result<M, FatalError>;
+	fn send<M: Message>(&mut self, m: &M) -> Result<(), FatalError>;
+	fn send_all<'m, I, M>(&'m mut self, m_iter: I) -> (usize, Result<(), FatalError>)
 	where 
 		M: Message + 'm,
 		I: Iterator<Item = &'m M>;
@@ -181,24 +206,16 @@ impl OneThread {
 	{
 		println!("c try recv fam");
 		if self.payload_bytes.is_none() {
-			println!("BRANCH A");
 			self.ensure_buf_capacity(LEN_BYTES);
-			let dank = self.stream.read(&mut self.buf[self.buf_occupancy..LEN_BYTES]);
-			println!("dank = {:?}", &dank);
-			println!("buf occupancy is {}", self.buf_occupancy);
-			let dank = dank?;
 			self.buf_occupancy +=
-				dank;
-			println!("buf is nao {:?}", &self.buf);
+				self.stream.read(&mut self.buf[self.buf_occupancy..LEN_BYTES])?;
 			if self.buf_occupancy == 4 {
 				self.payload_bytes = Some(
-					(&self.buf[0..LEN_BYTES]).read_u32::<LittleEndian>()
-					.expect("naimen")
+					(&self.buf[0..LEN_BYTES]).read_u32::<LittleEndian>()?
 				);
 			}
 		}
 		if let Some(pb) = self.payload_bytes {
-			println!("BRANCH B");
 			// try to get the payload bytes
 			let buf_end: usize = LEN_BYTES + pb as usize;
 			self.ensure_buf_capacity(buf_end);
@@ -209,7 +226,7 @@ impl OneThread {
 				// read message to completion!
 				let decoded: M = bincode::deserialize(
 					&self.buf[LEN_BYTES..buf_end]
-				).expect("jirre");
+				)?;
 				self.buf_occupancy = 0;
 				self.payload_bytes = None;
 				return Ok(decoded);
@@ -220,7 +237,7 @@ impl OneThread {
 }
 
 impl Courier for OneThread {
-	fn send<M>(&mut self, m: &M) -> Result<(), io::Error>
+	fn send<M>(&mut self, m: &M) -> Result<(), FatalError>
 	where
 		M: Message,
 	{
@@ -240,14 +257,14 @@ impl Courier for OneThread {
 			match self.stream.write(&encoded) {
 				Err(ref e) if e.kind() == ErrorKind::WouldBlock => print!("b"),
 				Ok(o) => break,
-				Err(e) => return Err(e),
+				Err(e) => return Err(FatalError::Io(e)),
 			} 
 		}
 		println!("send done?");
 		Ok(())
 	}
 
-	fn send_all<'m, I, M>(&'m mut self, m_iter: I) -> (usize, Result<(), io::Error>)
+	fn send_all<'m, I, M>(&'m mut self, m_iter: I) -> (usize, Result<(), FatalError>)
 	where 
 		M: Message + 'm,
 		I: Iterator<Item = &'m M>,
@@ -256,14 +273,14 @@ impl Courier for OneThread {
 	    for m in m_iter {
 	    	match self.send(m) {
 	    		Ok(_) => tot_sent += 1,
-	    		Err(ref e) if e.kind() == ErrorKind::WouldBlock => unreachable!(),
+	    		Err(FatalError::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => unreachable!(),
 	    		Err(e) => return (tot_sent, Err(e)),
 	    	}
 	    }
 	    (tot_sent, Ok(()))
 	}
 
-	fn recv<M>(&mut self) -> Result<M, io::Error>
+	fn recv<M>(&mut self) -> Result<M, FatalError>
 	where
 		M: Message,
 	{
@@ -281,7 +298,7 @@ impl Courier for OneThread {
 					match self.inner_try_recv() {
 						Err(TryRecvError::ReadNotReady) => (), //spurious
 						Ok(msg) => return Ok(msg),
-						Err(TryRecvError::Io(e)) => return Err(e),
+						Err(TryRecvError::Fatal(e)) => return Err(e),
 					}
 				}
 			}
