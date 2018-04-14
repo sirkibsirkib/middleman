@@ -5,23 +5,23 @@ use serde::{
 	de::DeserializeOwned,
 };
 extern crate byteorder;
-
 use byteorder::{
 	LittleEndian,
 	ReadBytesExt,
 	WriteBytesExt,
 };
+
 extern crate bincode;
+
 extern crate mio;
 use mio::*;
 use mio::tcp::{
 	TcpListener,
 	TcpStream,
 };
+
 use std::{
 	net::{
-		// TcpListener,
-		// TcpStream,
 		IpAddr,
 		Ipv4Addr,
 		SocketAddr,
@@ -36,27 +36,38 @@ use std::{
 	thread,
 };
 
+
+#[cfg(test)]
+mod tests;
+
 pub trait Message: Serialize + DeserializeOwned {}
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum CourierError {
-	Dead, ReadNotReady, BackoffPls, 
+#[derive(Debug)]
+pub enum TryRecvError {
+	Io(io::Error),
+	ReadNotReady,
 }
-impl std::convert::From<io::Error> for CourierError {
+impl std::convert::From<io::Error> for TryRecvError {
 	fn from(e: io::Error) -> Self {
 		if e.kind() == ErrorKind::WouldBlock {
-			CourierError::ReadNotReady
+			TryRecvError::ReadNotReady
 		} else {
-			CourierError::Dead
+			TryRecvError::Io(e)
 		}
 	}
 }
 
 pub trait Courier {
-	fn try_recv<M: Message>(&mut self) -> Result<M, CourierError>;
-	fn recv<M: Message>(&mut self) -> Result<M, CourierError>;
-	fn send<M: Message>(&mut self, m: &M) -> Result<(), CourierError>;
+	fn try_recv<M: Message>(&mut self) -> Result<M, TryRecvError>;
+	fn recv<M: Message>(&mut self) -> Result<M, io::Error>;
+	fn send<M: Message>(&mut self, m: &M) -> Result<(), io::Error>;
+	fn send_all<'m, I, M>(&'m mut self, m_iter: I) -> (usize, Result<(), io::Error>)
+	where 
+		M: Message + 'm,
+		I: Iterator<Item = &'m M>;
 }
+
+
 
 
 ///////////////////
@@ -75,11 +86,20 @@ impl Message for Bullshit {}
 fn main() {
     let (h, addr) = mio_echoserver();
 	let stream = TcpStream::connect(&addr).expect("x");
+	stream.set_nodelay(true).is_ok();
     let mut courier = OneThread::new(stream);
-	let r1 = courier.send(&Msg(1, "one".to_owned()));
-	let r1 = courier.send(&Msg(2, "two".to_owned()));
-	let r1 = courier.send(&Msg(3, "three".to_owned()));
-	let r1 = courier.send(&Msg(4, "four".to_owned()));
+    let 	batch = vec![
+		Msg(1, "one".to_owned()),
+		Msg(2, "two".to_owned()),
+		Msg(3, "three".to_owned()),
+		Msg(4, "four".to_owned()),
+	];
+    let went = courier.send_all(batch.iter());
+	// let r1 = courier.send(&Msg(1, "one".to_owned()));
+	// let r1 = courier.send(&Msg(2, "two".to_owned()));
+	// let r1 = courier.send(&Msg(3, "three".to_owned()));
+	// let r1 = courier.send(&Msg(4, "four".to_owned()));
+	println!("sending of {:#?} went {:?}", &batch, &went);
 
 	let r1 = courier.send(&Bullshit {
 		s: "potato".to_owned(),
@@ -155,7 +175,7 @@ impl OneThread {
 		self.buf_occupancy
 	}
 
-	fn inner_try_recv<M>(&mut self) -> Result<M, CourierError>
+	fn inner_try_recv<M>(&mut self) -> Result<M, TryRecvError>
 	where
 		M: Message,
 	{
@@ -195,27 +215,12 @@ impl OneThread {
 				return Ok(decoded);
 			}
 		}
-		Err(CourierError::ReadNotReady)
+		Err(TryRecvError::ReadNotReady)
 	}
 }
 
 impl Courier for OneThread {
-	// pub fn send_all<'m, I, M>(&mut self, m_iter: I) -> (usize, Result<(), io::Error>)
-	// where 
-	// 	M: Message + 'static,
-	// 	I: Iterator<Item = &'m M>,
-	// {
-	// 	let mut tot_sent = 0;
-	//     for m in m_iter {
-	//     	match self.send(m) {
-	//     		Ok(_) => tot_sent += 1,
-	//     		Err(e) => return (tot_sent, Err(e)),
-	//     	}
-	//     }
-	//     (tot_sent, Ok(()))
-	// }
-
-	fn send<M>(&mut self, m: &M) -> Result<(), CourierError>
+	fn send<M>(&mut self, m: &M) -> Result<(), io::Error>
 	where
 		M: Message,
 	{
@@ -235,14 +240,30 @@ impl Courier for OneThread {
 			match self.stream.write(&encoded) {
 				Err(ref e) if e.kind() == ErrorKind::WouldBlock => print!("b"),
 				Ok(o) => break,
-				Err(e) => return Err(CourierError::from(e)),
+				Err(e) => return Err(e),
 			} 
 		}
 		println!("send done?");
 		Ok(())
 	}
 
-	fn recv<M>(&mut self) -> Result<M, CourierError>
+	fn send_all<'m, I, M>(&'m mut self, m_iter: I) -> (usize, Result<(), io::Error>)
+	where 
+		M: Message + 'm,
+		I: Iterator<Item = &'m M>,
+	{
+		let mut tot_sent = 0;
+	    for m in m_iter {
+	    	match self.send(m) {
+	    		Ok(_) => tot_sent += 1,
+	    		Err(ref e) if e.kind() == ErrorKind::WouldBlock => unreachable!(),
+	    		Err(e) => return (tot_sent, Err(e)),
+	    	}
+	    }
+	    (tot_sent, Ok(()))
+	}
+
+	fn recv<M>(&mut self) -> Result<M, io::Error>
 	where
 		M: Message,
 	{
@@ -258,16 +279,16 @@ impl Courier for OneThread {
 				for event in e.iter() {
 					println!("recv spin!");
 					match self.inner_try_recv() {
-						Err(CourierError::ReadNotReady) => (), //spurious
+						Err(TryRecvError::ReadNotReady) => (), //spurious
 						Ok(msg) => return Ok(msg),
-						Err(e) => return Err(e),
+						Err(TryRecvError::Io(e)) => return Err(e),
 					}
 				}
 			}
 		}
 	}
 
-	fn try_recv<M>(&mut self) -> Result<M, CourierError>
+	fn try_recv<M>(&mut self) -> Result<M, TryRecvError>
 	where
 		M: Message,
 	{
@@ -397,7 +418,7 @@ fn mio_echoserver() -> (ThreadHandle, SocketAddr) {
 					        	.name(format!("handler_for_client@{:?}", peer_addr))
 					        	.spawn(move || {
 									println!("Client handler thread away!");
-					        		client_stream.set_nodelay(true);
+					        		client_stream.set_nodelay(true).is_ok();
 					        		server_handle(client_stream);
 					        	}).is_ok();
 				    		},
