@@ -31,6 +31,8 @@ use std::{
 	io,
 };
 
+////////////////////// API ////////////////////
+
 mod errors;
 pub use errors::{
 	TryRecvError,
@@ -45,6 +47,8 @@ pub use traits::{
 
 mod threadless;
 pub use threadless::Threadless;
+
+////////////////////// TESTS ////////////////////
 
 #[cfg(test)]
 mod tests;
