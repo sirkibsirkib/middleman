@@ -2,16 +2,16 @@
 
 ```Rust
  struct M: Message 
-	↑		|
-	|		|
+    ↑       ╷
+    ┆       ┆
     Middleman (⌐■_■)
 ~~~~~~~~~~~~~~~~~
-	▲		▼
-	▲ bytes	▼
-	▲		▼
+    ▲       ▼
+    ▲ bytes	▼
+    ▲       ▼
 ~~~~~~~~~~~~~~~~~
     Middleman (⌐■_■)
-	|		|
-	|		↓
+    ┆       ┆
+    ╵       ↓
  struct M: Message 
 ```
