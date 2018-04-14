@@ -126,10 +126,10 @@ fn main() {
 	// let r1 = courier.send(&Msg(4, "four".to_owned()));
 	println!("sending of {:#?} went {:?}", &batch, &went);
 
-	let r1 = courier.send(&Bullshit {
+	courier.send(&Bullshit {
 		s: "potato".to_owned(),
 		num: 21,
-	});
+	}).is_ok();
 	println!("get back {:?}", &courier.recv::<Msg>());
 	println!("get back {:?}", &courier.recv::<Msg>());
 	println!("get back {:?}", &courier.recv::<Msg>());
@@ -237,10 +237,7 @@ impl OneThread {
 }
 
 impl Courier for OneThread {
-	fn send<M>(&mut self, m: &M) -> Result<(), FatalError>
-	where
-		M: Message,
-	{
+	fn send<M: Message>(&mut self, m: &M) -> Result<(), FatalError> {
 		self.trivial_poll();
 		let encoded: Vec<u8> = bincode::serialize(&m).expect("nawww");
 		println!("about to send {:?}", &encoded);
@@ -250,17 +247,17 @@ impl Courier for OneThread {
 		}
 		let mut encoded_len = vec![];
 		encoded_len.write_u32::<LittleEndian>(len as u32)?;
-		// let sloopy = time::Duration::from_millis(100);
 		self.stream.write(&encoded_len)?;
-		loop {
-			// well now I HAVE to write :/
-			match self.stream.write(&encoded) {
-				Err(ref e) if e.kind() == ErrorKind::WouldBlock => print!("b"),
-				Ok(o) => break,
+		let mut sent_bytes = 0;
+		while sent_bytes < len {
+			//TODO! make sure this poll doesnt cause a STOP
+			self.poll.poll(&mut self.events, None).expect("poll failed!");
+			match self.stream.write(&encoded[sent_bytes..]) {
+				Err(ref e) if e.kind() == ErrorKind::WouldBlock => (),
+				Ok(b) => sent_bytes += b,
 				Err(e) => return Err(FatalError::Io(e)),
 			} 
 		}
-		println!("send done?");
 		Ok(())
 	}
 
@@ -280,20 +277,17 @@ impl Courier for OneThread {
 	    (tot_sent, Ok(()))
 	}
 
-	fn recv<M>(&mut self) -> Result<M, FatalError>
-	where
-		M: Message,
-	{
+	fn recv<M: Message>(&mut self) -> Result<M, FatalError> {
 		self.trivial_poll();
 		if let Ok(msg) = self.inner_try_recv() {
 			return Ok(msg);
 		}
 		let e = &mut self.events as *mut Events;
 		unsafe {
-			let e = &mut (*e); // I know that inner_try_recv() doesn't use self.events
+			let e = &mut *e; // trivial interior mutability
 			loop {	
 				self.poll.poll(e, None).expect("poll failed!");
-				for event in e.iter() {
+				for _event in e.iter() {
 					println!("recv spin!");
 					match self.inner_try_recv() {
 						Err(TryRecvError::ReadNotReady) => (), //spurious
@@ -305,10 +299,7 @@ impl Courier for OneThread {
 		}
 	}
 
-	fn try_recv<M>(&mut self) -> Result<M, TryRecvError>
-	where
-		M: Message,
-	{
+	fn try_recv<M: Message>(&mut self) -> Result<M, TryRecvError> {
 		self.trivial_poll();
 		self.inner_try_recv()
 	}
@@ -320,92 +311,6 @@ impl Courier for OneThread {
 //////////////////// MIOTEST/////////////////
 
 
-const S_IN: Token = Token(0);
-const C_IN: Token = Token(1);
-fn miotest() {
-	let addr = "127.0.0.1:13265".parse().unwrap();
-	let server = TcpListener::bind(&addr).unwrap();
-	let poll = Poll::new().unwrap();
-
-	// Start listening for incoming connections
-	poll.register(&server, S_IN, Ready::readable(),
-	              PollOpt::edge()).unwrap();
-
-	// Setup the client socket
-	let mut sock = TcpStream::connect(&addr).unwrap();
-
-	// Register the socket
-	poll.register(&sock, C_IN, Ready::readable() | Ready::writable(),
-	              PollOpt::edge()).unwrap();
-
-	// Create storage for events
-	let mut events = Events::with_capacity(32);
-	let mut cnt = 0;
-	let mut buf = [0u8; 256];
-	let mut started = false;
-	let halt = time::Duration::from_millis(2000);
-	loop {
-	    poll.poll(&mut events, None).unwrap();
-	    for event in events.iter() {
-	        match event.token() {
-	            S_IN => {
-	            	if event.readiness().is_readable() {
-	            		// Accept and drop the socket immediately, this will close
-		                // the socket and notify the client of the EOF.
-		                println!(" saccepting");
-		                if let Ok((client_sock, _addr)) = server.accept() {
-		                	println!("s accepted");
-		                	thread::Builder::new()
-		                	.name("handler".to_string())
-		                	.spawn(move || {
-		                		// client_sock.set_nodelay(true);
-		                		server_handle(client_sock);
-		                	}).is_ok();
-		                }
-	            	}
-	            },
-	            C_IN => {
-	            	if event.readiness().is_readable() {
-	            		// The server just shuts down the socket, let's just exit
-		                // from our event loop.
-		                if cnt < 3 {
-		                	println!("c readable!");
-					        match sock.read(&mut buf) {
-					        	Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-					        		println!("c spurious");
-					        	},
-				    			Ok(bytes) => {
-					        		println!("c read {:?} bytes", bytes);
-					        		sock.write(&buf[0..bytes]).is_ok();
-				    			},
-    							Err(e) => {
-				    				// println!("c Sock dead?? {:?}", e);
-	        			// 			thread::sleep(halt);
-				    				// return;
-				    			},
-				    		}
-		                	cnt += 1;
-		                } else {
-		                	println!("exiting");
-		                	drop(sock);
-		                	thread::sleep(halt);
-		                	return;
-		                }
-		                println!("c COUNT = {}", cnt);
-	            	} else if event.readiness().is_writable() && !started {
-	            		println!("c writable");
-	            		buf[0] = 4;
-	            		buf[1] = 2;
-	            		println!("c wrote `42`");
-	            		started = true;
-	            		sock.write(&buf[0..2]).is_ok();
-	            	}
-	            },
-	            _ => unreachable!(),
-	        }
-	    }
-	}
-}
 
 type ThreadHandle = std::thread::JoinHandle<std::net::SocketAddr>;
 fn mio_echoserver() -> (ThreadHandle, SocketAddr) {
@@ -461,7 +366,6 @@ fn server_handle(mut stream: TcpStream) {
 	              PollOpt::edge()).unwrap();
 	let mut events = Events::with_capacity(64);
 	let mut buf = [0u8; 256];
-	let halt = time::Duration::from_millis(500);
 	println!("s handle started");
 	loop {
 	    poll.poll(&mut events, None).unwrap();
