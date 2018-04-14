@@ -54,7 +54,7 @@ impl std::convert::From<io::Error> for CourierError {
 
 pub trait Courier {
 	fn try_recv<M: Message>(&mut self) -> Result<M, CourierError>;
-	// fn recv<M: Message>(&mut self) -> Result<M, CourierError>;
+	fn recv<M: Message>(&mut self) -> Result<M, CourierError>;
 	fn send<M: Message>(&mut self, m: &M) -> Result<(), CourierError>;
 }
 
@@ -64,25 +64,34 @@ pub trait Courier {
 pub struct Msg(pub u32, pub String);
 impl Message for Msg {}
 
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Bullshit {
+	s: String,
+	num: u16,
+}
+impl Message for Bullshit {}
+
 fn main() {
     let (h, addr) = mio_echoserver();
 	let stream = TcpStream::connect(&addr).expect("x");
-    let courier = OneThread::new(stream);
-    println!(">> GO call started");
-    go(courier);
-    println!(">> GO call finished");
+    let mut courier = OneThread::new(stream);
+	let r1 = courier.send(&Msg(1, "one".to_owned()));
+	let r1 = courier.send(&Msg(2, "two".to_owned()));
+	let r1 = courier.send(&Msg(3, "three".to_owned()));
+	let r1 = courier.send(&Msg(4, "four".to_owned()));
+
+	let r1 = courier.send(&Bullshit {
+		s: "potato".to_owned(),
+		num: 21,
+	});
+	println!("get back {:?}", &courier.recv::<Msg>());
+	println!("get back {:?}", &courier.recv::<Msg>());
+	println!("get back {:?}", &courier.recv::<Msg>());
+	println!("get back {:?}", &courier.recv::<Msg>());
+	println!("get back {:?}", &courier.recv::<Bullshit>());
     h.join().is_ok();
 }
-
-fn go<C: Courier>(mut courier: C) {
-	let pause = time::Duration::from_millis(500);
-	thread::sleep(pause);
-	let r1 = courier.send(&Msg(5, "Danky".to_owned()));
-	println!("r1 {:?}", &r1);
-}
-
-
-
 
 
 /*
@@ -95,18 +104,41 @@ pub struct OneThread {
 	buf: Vec<u8>,
 	buf_occupancy: usize,
 	payload_bytes: Option<u32>,
+
+	duration: time::Duration,
+	events: Events,
+	poll: Poll,
 }
 
 const LEN_BYTES: usize = 4; 
 
 impl OneThread {
+	const TOK: Token = Token(42);
+	const NUM_EVENTS: usize = 64;
+
 	pub fn new(stream: TcpStream) -> OneThread {
+		let poll = Poll::new().unwrap();
+		poll.register(&stream, Self::TOK, Ready::writable() | Ready::readable(),
+		              PollOpt::edge()).expect("register failed");
 		Self {
 			stream: stream,
 			buf: vec![],
 			buf_occupancy: 0,
 			payload_bytes: None,
+
+			duration: time::Duration::from_millis(0),
+			poll: poll,
+			events: Events::with_capacity(Self::NUM_EVENTS),
 		}
+	}
+
+	#[inline]
+	fn trivial_poll(&mut self) {
+		println!("Polling self, kek");
+		self.poll.poll(
+			&mut self.events,
+			Some(self.duration)
+		).expect("poll failed!");
 	}
 
 	fn ensure_buf_capacity(&mut self, capacity: usize) {
@@ -121,6 +153,49 @@ impl OneThread {
 		self.buf.resize(self.buf_occupancy, 0u8);
 		self.buf.shrink_to_fit();
 		self.buf_occupancy
+	}
+
+	fn inner_try_recv<M>(&mut self) -> Result<M, CourierError>
+	where
+		M: Message,
+	{
+		println!("c try recv fam");
+		if self.payload_bytes.is_none() {
+			println!("BRANCH A");
+			self.ensure_buf_capacity(LEN_BYTES);
+			let dank = self.stream.read(&mut self.buf[self.buf_occupancy..LEN_BYTES]);
+			println!("dank = {:?}", &dank);
+			println!("buf occupancy is {}", self.buf_occupancy);
+			let dank = dank?;
+			self.buf_occupancy +=
+				dank;
+			println!("buf is nao {:?}", &self.buf);
+			if self.buf_occupancy == 4 {
+				self.payload_bytes = Some(
+					(&self.buf[0..LEN_BYTES]).read_u32::<LittleEndian>()
+					.expect("naimen")
+				);
+			}
+		}
+		if let Some(pb) = self.payload_bytes {
+			println!("BRANCH B");
+			// try to get the payload bytes
+			let buf_end: usize = LEN_BYTES + pb as usize;
+			self.ensure_buf_capacity(buf_end);
+			self.buf_occupancy +=
+				self.stream.read(&mut self.buf[LEN_BYTES..buf_end])?;
+
+			if self.buf_occupancy == buf_end {
+				// read message to completion!
+				let decoded: M = bincode::deserialize(
+					&self.buf[LEN_BYTES..buf_end]
+				).expect("jirre");
+				self.buf_occupancy = 0;
+				self.payload_bytes = None;
+				return Ok(decoded);
+			}
+		}
+		Err(CourierError::ReadNotReady)
 	}
 }
 
@@ -144,6 +219,7 @@ impl Courier for OneThread {
 	where
 		M: Message,
 	{
+		self.trivial_poll();
 		let encoded: Vec<u8> = bincode::serialize(&m).expect("nawww");
 		println!("about to send {:?}", &encoded);
 		let len = encoded.len();
@@ -152,56 +228,51 @@ impl Courier for OneThread {
 		}
 		let mut encoded_len = vec![];
 		encoded_len.write_u32::<LittleEndian>(len as u32)?;
+		// let sloopy = time::Duration::from_millis(100);
+		self.stream.write(&encoded_len)?;
 		loop {
-			match self.stream.write(&encoded_len) {
-				Err(ref e) if e.kind() == ErrorKind::WouldBlock => print!("a"),
-				Ok(o) => break,
-				Err(e) => return Err(CourierError::from(e)),
-			} 
-		}
-		loop {
+			// well now I HAVE to write :/
 			match self.stream.write(&encoded) {
 				Err(ref e) if e.kind() == ErrorKind::WouldBlock => print!("b"),
 				Ok(o) => break,
 				Err(e) => return Err(CourierError::from(e)),
 			} 
 		}
+		println!("send done?");
 		Ok(())
+	}
+
+	fn recv<M>(&mut self) -> Result<M, CourierError>
+	where
+		M: Message,
+	{
+		self.trivial_poll();
+		if let Ok(msg) = self.inner_try_recv() {
+			return Ok(msg);
+		}
+		let e = &mut self.events as *mut Events;
+		unsafe {
+			let e = &mut (*e); // I know that inner_try_recv() doesn't use self.events
+			loop {	
+				self.poll.poll(e, None).expect("poll failed!");
+				for event in e.iter() {
+					println!("recv spin!");
+					match self.inner_try_recv() {
+						Err(CourierError::ReadNotReady) => (), //spurious
+						Ok(msg) => return Ok(msg),
+						Err(e) => return Err(e),
+					}
+				}
+			}
+		}
 	}
 
 	fn try_recv<M>(&mut self) -> Result<M, CourierError>
 	where
 		M: Message,
 	{
-		if self.payload_bytes.is_none() {
-			self.ensure_buf_capacity(LEN_BYTES);
-			self.buf_occupancy +=
-				self.stream.read(&mut self.buf[self.buf_occupancy..LEN_BYTES])?;
-			if self.buf_occupancy == 4 {
-				self.payload_bytes = Some(
-					(&self.buf[0..LEN_BYTES]).read_u32::<LittleEndian>()
-					.expect("naimen")
-				);
-			}
-		}
-		if let Some(pb) = self.payload_bytes {
-			// try to get the payload bytes
-			let buf_end: usize = LEN_BYTES + pb as usize;
-			self.ensure_buf_capacity(buf_end);
-			self.buf_occupancy +=
-				self.stream.read(&mut self.buf[LEN_BYTES..buf_end])?;
-
-			if self.buf_occupancy == buf_end {
-				// read message to completion!
-				let decoded: M = bincode::deserialize(
-					&self.buf[LEN_BYTES..buf_end]
-				).expect("jirre");
-				self.buf_occupancy = 0;
-				self.payload_bytes = None;
-				return Ok(decoded);
-			}
-		}
-		Err(CourierError::ReadNotReady)
+		self.trivial_poll();
+		self.inner_try_recv()
 	}
 }
 
@@ -300,7 +371,7 @@ fn miotest() {
 
 type ThreadHandle = std::thread::JoinHandle<std::net::SocketAddr>;
 fn mio_echoserver() -> (ThreadHandle, SocketAddr) {
-	for port in 4000..12000 {
+	for port in 8000..12000 {
 		let addr = SocketAddr::new(
 			IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
 			port,
@@ -311,13 +382,16 @@ fn mio_echoserver() -> (ThreadHandle, SocketAddr) {
 			.spawn(move || {
 				println!("Listener started at addr {:?}", &addr);
 				let poll = Poll::new().unwrap();
+				poll.register(&listener, Token(0), Ready::readable(),
+					PollOpt::edge()).unwrap();
 				let mut events = Events::with_capacity(32);
-				poll.register(&listener, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
 				loop {
 				    poll.poll(&mut events, None).unwrap();
+				    println!("mmmk");
 				    for event in events.iter() {
+				    	println!("echo got event! {:?}", &event);
 				    	match listener.accept() {
-				    		Err(ref e) if e.kind() == ErrorKind::WouldBlock => (), //spurious wakeup
+				    		Err(ref e) if e.kind() == ErrorKind::WouldBlock => println!("spurious"), //spurious wakeup
 				    		Ok((client_stream, peer_addr)) => {
 				    			thread::Builder::new()
 					        	.name(format!("handler_for_client@{:?}", peer_addr))
@@ -327,7 +401,10 @@ fn mio_echoserver() -> (ThreadHandle, SocketAddr) {
 					        		server_handle(client_stream);
 					        	}).is_ok();
 				    		},
-				    		Err(_) => return addr, //socket has died
+				    		Err(_) => {
+				    			println!("socket dead");
+				    			return addr;
+				    		}, //socket has died
 				    	}
 				    }
 				}
@@ -347,7 +424,7 @@ fn server_handle(mut stream: TcpStream) {
 	let mut events = Events::with_capacity(64);
 	let mut buf = [0u8; 256];
 	let halt = time::Duration::from_millis(500);
-
+	println!("s handle started");
 	loop {
 	    poll.poll(&mut events, None).unwrap();
 	     for event in events.iter() {
@@ -359,6 +436,7 @@ fn server_handle(mut stream: TcpStream) {
     			Ok(bytes) => {
 	        		println!("s read {:?} bytes", bytes);
 	        		//thread::sleep(halt);
+	        		println!("serv send {:?}", &buf[0..bytes]);
 	        		stream.write(&buf[0..bytes]).expect("did fine");
 	        		println!("Ok");
 	        		println!("writable? {:?}", event.readiness().is_writable());
