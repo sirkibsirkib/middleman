@@ -1,4 +1,5 @@
 use super::*;
+use std::thread;
 
 #[derive(Debug)]
 pub struct Threadless {
@@ -83,6 +84,11 @@ impl Middleman for Threadless {
 		let poll = Poll::new().unwrap();
 		poll.register(&stream, Self::TOK, Ready::writable() | Ready::readable(),
 		              PollOpt::edge()).expect("register failed");
+		let mut events = Events::with_capacity(Self::NUM_EVENTS);
+		poll.poll(&mut events, None).expect("poll failed!");
+
+		for event in events.iter() {} // TODO is this bad????
+		
 		Self {
 			stream: stream,
 			buf: vec![],
@@ -91,7 +97,7 @@ impl Middleman for Threadless {
 
 			duration: time::Duration::from_millis(0),
 			poll: poll,
-			events: Events::with_capacity(Self::NUM_EVENTS),
+			events: events,
 		}
 	}
 
@@ -107,13 +113,17 @@ impl Middleman for Threadless {
 		self.stream.write(&encoded_len)?;
 		let mut sent_bytes = 0;
 		while sent_bytes < len {
-			//TODO! make sure this poll doesnt cause a STOP
+			// first try existing events
+			for event in self.events.iter() {
+				if event.readiness().is_writable() {
+					match self.stream.write(&encoded[sent_bytes..]) {
+						Err(ref e) if e.kind() == ErrorKind::WouldBlock => (),
+						Ok(b) => sent_bytes += b,
+						Err(e) => return Err(FatalError::Io(e)),
+					}
+				}
+			}
 			self.poll.poll(&mut self.events, None).expect("poll failed!");
-			match self.stream.write(&encoded[sent_bytes..]) {
-				Err(ref e) if e.kind() == ErrorKind::WouldBlock => (),
-				Ok(b) => sent_bytes += b,
-				Err(e) => return Err(FatalError::Io(e)),
-			} 
 		}
 		Ok(())
 	}
@@ -135,7 +145,7 @@ impl Middleman for Threadless {
 	}
 
 	fn recv<M: Message>(&mut self) -> Result<M, FatalError> {
-		self.trivial_poll();
+		// self.trivial_poll();
 		if let Ok(msg) = self.inner_try_recv() {
 			return Ok(msg);
 		}
@@ -143,14 +153,16 @@ impl Middleman for Threadless {
 		unsafe {
 			let e = &mut *e; // trivial interior mutability
 			loop {
-				self.poll.poll(e, None).expect("poll failed!");
-				for _event in e.iter() {
-					match self.inner_try_recv() {
-						Err(TryRecvError::ReadNotReady) => (), //spurious
-						Ok(msg) => return Ok(msg),
-						Err(TryRecvError::Fatal(e)) => return Err(e),
+				for event in e.iter() {
+					if event.readiness().is_readable() {
+						match self.inner_try_recv() {
+							Err(TryRecvError::ReadNotReady) => 	(), //spurious
+							Ok(msg) => 							return Ok(msg),
+							Err(TryRecvError::Fatal(e)) => 		return Err(e),
+						}
 					}
 				}
+				self.poll.poll(e, None).expect("poll failed!");
 			}
 		}
 	}
