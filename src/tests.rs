@@ -19,7 +19,7 @@ use ::std::{
 	thread,
 };
 
-const DEBUG_PRINTING: bool = false;
+const DEBUG_PRINTING: bool = true;
 //set to true and run tests with `-- --nocapture` for full printing
 macro_rules! dprintln {
 	() => ();
@@ -105,13 +105,9 @@ fn echoes() {
 }
 
 #[test]
-fn many() {
-	use self::TestMsg;
-	println!("MANY TEST GO!");
-
+fn many_blocking() {
 	let num_threads = 5;
-
-	dprintln!("Starting echo server");
+	let num_messages = 10;
     let (_handle, addr) = mio_echoserver();
 
     //TODO continue
@@ -119,69 +115,94 @@ fn many() {
 	.map(|x| {
 		thread::spawn(move || {
 			let stream = TcpStream::connect(&addr).unwrap();
-			println!("connected");
-			dprintln!("Connected to echo server");
+			// dprintln!("Connected to echo server");
 			stream.set_nodelay(true).is_ok();
 
 			// Create our middleman object to protect the `TcpStream` object.
-			dprintln!("Creating middleman");
+			// dprintln!("Creating middleman");
 		    let mm = Threadless::new(stream);
-			one(mm, x, &format!("[{:02}]", x))
+			blocking(mm, x, &format!("[{:02}]", x), num_messages)
 		})
 	})
 	.collect::<Vec<_>>();
-	for (i, h) in handles.drain(..).enumerate() {
-		println!("joined {}", i);
+	for h in handles.drain(..) {
 		h.join().is_ok();
 	}
 }
 
-fn one<M: Middleman>(mut mm: M, index: u32, name: &str) {
-	let send = 12;
 
-	let messages = (0..send)
+#[test]
+fn many_nonblocking() {
+	let num_threads = 5;
+	let num_messages = 10;
+    let (_handle, addr) = mio_echoserver();
+
+    //TODO continue
+	let mut handles = (0..num_threads)
+	.map(|x| {
+		thread::spawn(move || {
+			let stream = TcpStream::connect(&addr).unwrap();
+			// dprintln!("Connected to echo server");
+			stream.set_nodelay(true).is_ok();
+
+			// Create our middleman object to protect the `TcpStream` object.
+			// dprintln!("Creating middleman");
+		    let mm = Threadless::new(stream);
+			nonblocking(mm, x, &format!("[{:02}]", x), num_messages)
+		})
+	})
+	.collect::<Vec<_>>();
+	for h in handles.drain(..) {
+		h.join().is_ok();
+	}
+}
+
+fn blocking<M: Middleman>(mut mm: M, index: u32, name: &str, num_messages: u32) {
+	let messages = (0..num_messages)
+	.map(|x| TestMsg(x, name.to_owned()))
+	.collect::<Vec<_>>();
+	for m in messages.iter() {
+		mm.send(m).is_ok();
+	}
+	for sent in messages.iter() {
+		let msg = mm.recv::<TestMsg>()
+		.expect("crashed on recv!");
+		assert_eq!(&msg, sent);
+	}
+	dprintln!("t index {} got all messages correctly", index);
+}
+
+
+fn nonblocking<M: Middleman>(mut mm: M, index: u32, name: &str, num_messages: u32) {
+	let messages = (0..num_messages)
 	.map(|x| TestMsg(x, name.to_owned()))
 	.collect::<Vec<_>>();
 
 	for m in messages.iter() {
 		mm.send(m).is_ok();
 	}
-	println!("sent OK {}", index);
 
 	let mut got = vec![];
-
-	//TODO why isn't it working?
-	let patience = time::Duration::from_millis(100);
+	let patience = time::Duration::from_millis(5000);
+	let sleepy = time::Duration::from_millis(1);
 	let start = time::Instant::now();	
 
 	let mut loops = 0;
-	// for _ in 0..send {
-	// 	match mm.recv::<TestMsg>() {
-	// 		Ok(TestMsg(a, _b)) => {
-	// 			got.push(a);
-	// 		},
-	// 		Err(f) => {
-	// 			println!("client {} crashed with {:?}", index, f);
-	// 			return;
-	// 		}
-	// 	}
-	// }
-	while start.elapsed() <= patience {
+	while got.len() < num_messages as usize && start.elapsed() <= patience {
 		loops += 1;
+		thread::sleep(sleepy);
 		match mm.try_recv::<TestMsg>() {
 			Ok(TestMsg(a, _b)) => {
 				got.push(a);
 			},
 			Err(TryRecvError::ReadNotReady) => (), // spin!
 			Err(TryRecvError::Fatal(f)) => {
-				println!("client {} crashed with {:?}", index, f);
+				dprintln!("client {} crashed with {:?}", index, f);
 				return;
 			}
 		}
 	}
-	println!("t index {} did {} loops. got {}/{}\t{:?}", index, loops, got.len(), send, &got);
-
-	thread::sleep(patience);
+	dprintln!("t index {} did {} loops. got {}/{}\t{:?}", index, loops, got.len(), num_messages, &got);
 }
 
 
@@ -245,22 +266,21 @@ fn server_handle(mut stream: TcpStream) {
 	loop {
 	    poll.poll(&mut events, Some(halt)).unwrap();
 	    for event in events.iter() {
-	     	// if !event.readiness().is_readable() {
-	     	// 	continue;
-	     	// }
+	    	if !event.readiness().is_readable() {
+	    		continue;
+	    	}
 	        match stream.read(&mut buf) {
 	        	Err(ref e) if e.kind() == ErrorKind::WouldBlock => (),
     			Ok(bytes) => {
-    				toawt += bytes;
-    				if toawt == 200 {
-    					println!("SDONE");
-    					toawt = 99;
-    				}
+    				// toawt += bytes;
+    				// if toawt == 200 {
+    				// 	println!("SDONE");
+    				// 	toawt = 99;
+    				// }
     				if bytes > 0 {
-    					// println!("[echo] read {:?} bytes", bytes);
-		        		dprintln!("[echo] sending {}", hex_string(&buf[0..bytes]));
-		        		stream.write(&buf[0..bytes]).expect("did fine");
-		        		// println!("[echo] sent the {:?} bytes", bytes);
+		        		dprintln!("[echo] sent {} bytes.", bytes);
+		        		// dprintln!("[echo] sending {}", hex_string(&buf[0..bytes]));
+		        		stream.write(&buf[0..bytes]).expect("write failed");
     				}
     			},
     			Err(_e) => {

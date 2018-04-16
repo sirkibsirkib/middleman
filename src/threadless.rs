@@ -1,5 +1,4 @@
 use super::*;
-use std::thread;
 
 #[derive(Debug)]
 pub struct Threadless {
