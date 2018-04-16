@@ -19,7 +19,7 @@ use ::std::{
 	thread,
 };
 
-const DEBUG_PRINTING: bool = true;
+const DEBUG_PRINTING: bool = false;
 //set to true and run tests with `-- --nocapture` for full printing
 macro_rules! dprintln {
 	() => ();
@@ -49,7 +49,7 @@ fn echoes() {
 	let stream = TcpStream::connect(&addr).unwrap();
 	dprintln!("Connected to echo server");
 	// Nodelay==true for speed. Works with and without.
-	stream.set_nodelay(true).is_ok();
+	stream.set_nodelay(true).unwrap();
 
 	// Create our middleman object to protect the `TcpStream` object.
 	dprintln!("Creating middleman");
@@ -68,7 +68,7 @@ fn echoes() {
 	dprintln!("sending messages 1,2,3,4");
     let (num_sent, result) = middleman.send_all(batch.iter());
     assert_eq!(num_sent, 4);
-    result.is_ok();
+    result.unwrap();
 
     // receive the echo'd messages. check they are correct
     for msg in batch.iter() {
@@ -82,7 +82,7 @@ fn echoes() {
 
 	// send a single message over the wire
 	dprintln!("sending message 5");
-    middleman.send(&last_msg).is_ok();
+    middleman.send(&last_msg).unwrap();
 
     loop { //spin until we receive message 5!
 
@@ -106,27 +106,22 @@ fn echoes() {
 
 #[test]
 fn many_blocking() {
-	let num_threads = 5;
+	let num_threads = 20;
 	let num_messages = 10;
-    let (_handle, addr) = mio_echoserver();
 
-    //TODO continue
+    let (_handle, addr) = mio_echoserver();
 	let mut handles = (0..num_threads)
 	.map(|x| {
 		thread::spawn(move || {
 			let stream = TcpStream::connect(&addr).unwrap();
-			// dprintln!("Connected to echo server");
-			stream.set_nodelay(true).is_ok();
-
-			// Create our middleman object to protect the `TcpStream` object.
-			// dprintln!("Creating middleman");
+			stream.set_nodelay(true).unwrap();
 		    let mm = Threadless::new(stream);
-			blocking(mm, x, &format!("[{:02}]", x), num_messages)
+			blocking(mm, x, &format!("[{:02}]", x), num_messages);
 		})
 	})
 	.collect::<Vec<_>>();
 	for h in handles.drain(..) {
-		h.join().is_ok();
+		h.join().unwrap();
 	}
 }
 
@@ -135,25 +130,20 @@ fn many_blocking() {
 fn many_nonblocking() {
 	let num_threads = 5;
 	let num_messages = 10;
-    let (_handle, addr) = mio_echoserver();
 
-    //TODO continue
+    let (_handle, addr) = mio_echoserver();
 	let mut handles = (0..num_threads)
 	.map(|x| {
 		thread::spawn(move || {
 			let stream = TcpStream::connect(&addr).unwrap();
-			// dprintln!("Connected to echo server");
-			stream.set_nodelay(true).is_ok();
-
-			// Create our middleman object to protect the `TcpStream` object.
-			// dprintln!("Creating middleman");
+			stream.set_nodelay(true).unwrap();
 		    let mm = Threadless::new(stream);
 			nonblocking(mm, x, &format!("[{:02}]", x), num_messages)
 		})
 	})
 	.collect::<Vec<_>>();
 	for h in handles.drain(..) {
-		h.join().is_ok();
+		h.join().unwrap();
 	}
 }
 
@@ -162,7 +152,7 @@ fn blocking<M: Middleman>(mut mm: M, index: u32, name: &str, num_messages: u32) 
 	.map(|x| TestMsg(x, name.to_owned()))
 	.collect::<Vec<_>>();
 	for m in messages.iter() {
-		mm.send(m).is_ok();
+		mm.send(m).unwrap();
 	}
 	for sent in messages.iter() {
 		let msg = mm.recv::<TestMsg>()
@@ -179,7 +169,7 @@ fn nonblocking<M: Middleman>(mut mm: M, index: u32, name: &str, num_messages: u3
 	.collect::<Vec<_>>();
 
 	for m in messages.iter() {
-		mm.send(m).is_ok();
+		mm.send(m).unwrap();
 	}
 
 	let mut got = vec![];
@@ -233,9 +223,9 @@ fn mio_echoserver() -> (ThreadHandle, SocketAddr) {
 				    			thread::Builder::new()
 					        	.name(format!("handler_for_client@{:?}", peer_addr))
 					        	.spawn(move || {
-					        		client_stream.set_nodelay(true).is_ok();
+					        		client_stream.set_nodelay(true).unwrap();
 					        		server_handle(client_stream);
-					        	}).is_ok();
+					        	}).unwrap();
 				    		},
 				    		Err(_) => {
 				    			dprintln!("[echo] listener socket died!");
@@ -257,14 +247,10 @@ fn server_handle(mut stream: TcpStream) {
 	let poll = Poll::new().unwrap();
 	poll.register(&stream, Token(21), Ready::readable() | Ready::writable(),
 	              PollOpt::edge()).unwrap();
-	let mut events = Events::with_capacity(64);
+	let mut events = Events::with_capacity(128);
 	let mut buf = [0u8; 1024];
-	dprintln!("[echo] handling client");
-	let halt = time::Duration::from_millis(50);
-
-	let mut toawt = 0;
 	loop {
-	    poll.poll(&mut events, Some(halt)).unwrap();
+	    poll.poll(&mut events, None).unwrap();
 	    for event in events.iter() {
 	    	if !event.readiness().is_readable() {
 	    		continue;
@@ -272,11 +258,6 @@ fn server_handle(mut stream: TcpStream) {
 	        match stream.read(&mut buf) {
 	        	Err(ref e) if e.kind() == ErrorKind::WouldBlock => (),
     			Ok(bytes) => {
-    				// toawt += bytes;
-    				// if toawt == 200 {
-    				// 	println!("SDONE");
-    				// 	toawt = 99;
-    				// }
     				if bytes > 0 {
 		        		dprintln!("[echo] sent {} bytes.", bytes);
 		        		// dprintln!("[echo] sending {}", hex_string(&buf[0..bytes]));
