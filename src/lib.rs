@@ -1,15 +1,9 @@
 ////////////////////// IMPORTS ////////////////////
 
 extern crate serde;
-
 extern crate byteorder;
-
 extern crate bincode;
-
 extern crate mio;
-// use mio::*;
-// use mio::tcp::TcpStream;
-
 
 ////////////////////// API ////////////////////
 
