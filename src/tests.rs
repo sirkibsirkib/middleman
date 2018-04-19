@@ -1,5 +1,7 @@
 use super::*;
 
+#[macro_use] extern crate serde_derive;
+
 use ::mio::tcp::{
 	TcpListener,
 	TcpStream,
@@ -260,7 +262,6 @@ fn server_handle(mut stream: TcpStream) {
     			Ok(bytes) => {
     				if bytes > 0 {
 		        		dprintln!("[echo] sent {} bytes.", bytes);
-		        		// dprintln!("[echo] sending {}", hex_string(&buf[0..bytes]));
 		        		stream.write(&buf[0..bytes]).expect("write failed");
     				}
     			},

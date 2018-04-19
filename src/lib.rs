@@ -1,35 +1,15 @@
 ////////////////////// IMPORTS ////////////////////
 
-#[macro_use] extern crate serde_derive;
 extern crate serde;
-use serde::{
-	Serialize, 
-	de::DeserializeOwned,
-};
+
 extern crate byteorder;
-use byteorder::{
-	LittleEndian,
-	ReadBytesExt,
-	WriteBytesExt,
-};
 
 extern crate bincode;
 
 extern crate mio;
-use mio::*;
-use mio::tcp::TcpStream;
+// use mio::*;
+// use mio::tcp::TcpStream;
 
-use std::{
-	convert::From,
-	boxed::Box,
-	io::{
-		Read,
-		Write,
-		ErrorKind,
-	},
-	time,
-	io,
-};
 
 ////////////////////// API ////////////////////
 

@@ -1,5 +1,22 @@
 use super::*;
 
+use mio::*;
+use mio::tcp::TcpStream;
+use ::std::{
+	io::{
+		Read,
+		Write,
+		ErrorKind,
+	},
+	time,
+};
+
+use byteorder::{
+	LittleEndian,
+	ReadBytesExt,
+	WriteBytesExt,
+};
+
 #[derive(Debug)]
 pub struct Threadless {
 	stream: TcpStream,
@@ -86,7 +103,7 @@ impl Middleman for Threadless {
 		let mut events = Events::with_capacity(Self::NUM_EVENTS);
 		poll.poll(&mut events, None).expect("poll failed!");
 
-		for event in events.iter() {} // TODO is this bad????
+		for _event in events.iter() {} // TODO is this bad????
 		
 		Self {
 			stream: stream,
