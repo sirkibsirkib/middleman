@@ -37,29 +37,24 @@ macro_rules! dprintln {
 	});
 }
 
-
-////////////////////// USE CASE EXAMPLE //////////////////
-
 // Here is the struct we will be sending over the network
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct TestMsg(pub u32, pub String);
 impl Message for TestMsg {}
 
-const MIO_TOK: Token = Token(21);
+const TOK_A: Token = Token(0);
+const TOK_B: Token = Token(0);
+
+
 #[test]
 fn single_client_asynch() {
-	// connect to echo server
-    let (_handle, addr) = mio_echoserver(12000..14000);
-
-    // set up TcpStream connection for client. wrap it with a Middleman
-    let stream = TcpStream::connect(&addr).expect("failed to connect!");
-	stream.set_nodelay(true).unwrap();
-    let mut mm = Middleman::new(stream);
+    let (_handle, addr) = mio_echoserver();
+    let mut mm = client_middleman(&addr);
 
     // Register our middleman with the mio::Poll object.
 	let poll = Poll::new().unwrap();
 	let mut events = Events::with_capacity(128);
-	poll.register(&mm, MIO_TOK, Ready::readable() | Ready::writable(), PollOpt::edge())
+	poll.register(&mm, TOK_A, Ready::readable() | Ready::writable(), PollOpt::edge())
 		.expect("failed to register!");
 
 	// send two messages to echo server to get things going
@@ -105,14 +100,12 @@ impl Message for StressMsg {}
 
 #[test]
 fn stress() {
-    let (_handle, addr) = mio_echoserver(10000..12000);
-    let stream = TcpStream::connect(&addr).expect("failed to connect!");
+    let (_handle, addr) = mio_echoserver();
+    let mut mm = client_middleman(&addr);
 	let poll = Poll::new().unwrap();
 	let mut events = Events::with_capacity(128);
-	stream.set_nodelay(true).unwrap();
-    let mut mm = Middleman::new(stream);
 
-    poll.register(& mm, Token(0), Ready::readable() | Ready::writable(), PollOpt::edge())
+    poll.register(& mm, TOK_A, Ready::readable() | Ready::writable(), PollOpt::edge())
 		.expect("failed to register!");
 
 	let mut sum = 0;
@@ -140,14 +133,10 @@ fn stress() {
 }
 
 
-
-const C1_TOK: Token = Token(0);
-const C2_TOK: Token = Token(1);
-
 #[test]
 fn two_clients_asynch() {
 	// start the echo server for the test
-    let (_handle, addr) = mio_echoserver(8000..10000);
+    let (_handle, addr) = mio_echoserver();
 
     // create the mio primitives we need
 	let poll = Poll::new().unwrap();
@@ -159,13 +148,8 @@ fn two_clients_asynch() {
     let mut states: HashMap<Token, (Middleman, u32)>
     	= HashMap::new();
 
-    for token in vec![C1_TOK, C2_TOK] {
-
-    	// set up TcpStream connection for clients. wrap each up with a Middleman
-    	let stream = TcpStream::connect(&addr)
-    		.expect("failed to connect!");
-		stream.set_nodelay(true).unwrap();
-	    let mut mm = Middleman::new(stream);
+    for token in vec![TOK_A, TOK_B] {
+    	let mut mm = client_middleman(&addr);
 
     	// Register our middlemen with the mio::Poll object.
 	    poll.register(&mm, token, Ready::readable() | Ready::writable(), PollOpt::edge())
@@ -226,21 +210,17 @@ fn two_clients_asynch() {
 	dprintln!("all Middlemen did their work to completion!");
 }
 
-const BLOCK_TOKEN: Token = Token(0);
+
 #[test]
 fn blocking() {
 	// connect to echo server
-    let (_handle, addr) = mio_echoserver(6000..8000);
-
-    // set up TcpStream connection for client. wrap it with a Middleman
-    let stream = TcpStream::connect(&addr).expect("failed to connect!");
-	stream.set_nodelay(true).unwrap();
-    let mut mm = Middleman::new(stream);
+    let (_handle, addr) = mio_echoserver();
+    let mut mm = client_middleman(&addr);
 
     // Register our middleman with the mio::Poll object.
 	let poll = Poll::new().unwrap();
 	let mut events = Events::with_capacity(128);
-	poll.register(&mm, BLOCK_TOKEN, Ready::readable() | Ready::writable(), PollOpt::edge())
+	poll.register(&mm, TOK_A, Ready::readable() | Ready::writable(), PollOpt::edge())
 		.expect("failed to register!");
 
 	// send two messages to echo server to get things going
@@ -279,7 +259,7 @@ fn blocking() {
 				let got = mm.recv_blocking::<TestMsg>(
 					&poll,
 					&mut events,
-					BLOCK_TOKEN,
+					TOK_A,
 					&mut spillover,
 					None,
 				);
@@ -291,18 +271,56 @@ fn blocking() {
 }
 
 #[test]
-fn try_recv_all() {
-	// connect to echo server
-    let (_handle, addr) = mio_echoserver(4000..6000);
+fn discard() {
+    let (_handle, addr) = mio_echoserver();
+    let mut mm = client_middleman(&addr);
 
-    // set up TcpStream connection for client. wrap it with a Middleman
-    let stream = TcpStream::connect(&addr).expect("failed to connect!");
-	stream.set_nodelay(true).unwrap();
-    let mut mm = Middleman::new(stream);
+	let poll = Poll::new().unwrap();
+	poll.register(&mm, TOK_A, Ready::readable() | Ready::writable(), PollOpt::edge())
+		.expect("failed to register!");
+	let mut events = Events::with_capacity(128);
+
+	let messages: Vec<_> = (0..30).map(|x| TestMsg(x, String::new())).collect();
+	mm.send_all(messages.iter()).1.ok();
+	let mut next_index = 0;
+
+	while next_index < 30 {
+		poll.poll(&mut events, None).ok();
+		for event in events.iter() {
+			mm.read_write(&event).ok();
+		}
+
+		while next_index < 30 {
+			if next_index%2 == 0 {
+				if let Some(msg) = mm.try_recv::<TestMsg>().unwrap() {
+					dprintln!("GOT {:?}", msg);
+					assert_eq!(messages[next_index], msg);
+					next_index += 1;
+				} else {
+					break;
+				}
+			} else {
+				//discarding every 2nd message without comparing.
+				//Doesn't require knowledge of struct type. 
+				if mm.try_discard() {
+					dprintln!("DISCARDED");
+					next_index += 1;
+				} else {
+					break;
+				}
+			}
+		}
+	}
+}
+
+#[test]
+fn try_recv_all() {
+    let (_handle, addr) = mio_echoserver();
+    let mut mm = client_middleman(&addr);
 
     // Register our middleman with the mio::Poll object.
 	let poll = Poll::new().unwrap();
-	poll.register(&mm, MIO_TOK, Ready::readable() | Ready::writable(), PollOpt::edge())
+	poll.register(&mm, TOK_A, Ready::readable() | Ready::writable(), PollOpt::edge())
 		.expect("failed to register!");
 	let mut events = Events::with_capacity(128);
 
@@ -335,11 +353,19 @@ fn try_recv_all() {
 
 /////////////////// ECHO SERVER FOR TEST CLIENTS ///////////////////
 
+
+fn client_middleman(addr: &SocketAddr) -> Middleman {
+	let stream = TcpStream::connect(&addr)
+		.expect("failed to connect!");
+	stream.set_nodelay(true).unwrap();
+    Middleman::new(stream)
+}
+
 type ThreadHandle = std::thread::JoinHandle<std::net::SocketAddr>;
 
 // spawn an echo server on localhost. return the thread handle and the bound ip addr.
-fn mio_echoserver(port_range: std::ops::Range<u16>) -> (ThreadHandle, SocketAddr) {
-	for port in port_range {
+fn mio_echoserver() -> (ThreadHandle, SocketAddr) {
+	for port in 4000..17000 {
 		let addr = SocketAddr::new(
 			IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
 			port,

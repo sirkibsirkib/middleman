@@ -22,6 +22,13 @@ use byteorder::{
 	WriteBytesExt,
 };
 
+/// Wraps a `mio::TcpStream` object. Implmenents `mio::Evented` so it can be
+/// registered for polling. Offers `try_read` and `send` functions primarily
+/// with variants for convenience. This structure doesn't involve any extra threading.
+///
+/// Note that data will only travel over the stream when `read_in` and `write_out`
+/// are called. Typically, these calls are agglutinated using the single call `read_write`
+/// in the context of a `mio::Event`. See the tests for some examples.
 #[derive(Debug)]
 pub struct Middleman {
 	stream: TcpStream,
@@ -34,6 +41,7 @@ pub struct Middleman {
 impl Middleman {
 	const LEN_BYTES: usize = 4;
 
+	/// Wraps the given `mio::TcpStream` in a new middleman.
 	pub fn new(stream: TcpStream) -> Middleman {
 		Self {
 			stream: stream,
@@ -44,6 +52,9 @@ impl Middleman {
 		}
 	}
 
+	/// This call is the bread and butter of reading and writing local changes to the 
+	/// middleman's internal state to the TcpStream within. If this function is never called,
+	/// no progress will ever be made.
 	pub fn read_write(&mut self, event: &Event) -> Result<(), io::Error> {
 		if event.readiness().is_readable() {
 			self.read_in()?;
@@ -54,6 +65,11 @@ impl Middleman {
 		Ok(())
 	}
 
+	/// Force the middleman to try and write any waiting bytes to the TcpStream.
+	/// Instead of blocking when the socket isn't ready, the call returns Ok(0).
+	/// Errors in writing to the socket emerge as an Err(_) variant.
+	/// 
+	/// It is advised to rely on the `read_write` for reading and writing instead.
 	pub fn write_out(&mut self) -> Result<usize, io::Error> {
 		match self.stream.write(& self.to_send[..]) {
 			Err(ref e) if e.kind() == ErrorKind::WouldBlock => Ok(0),
@@ -65,13 +81,11 @@ impl Middleman {
 		}
 	}
 
-	pub fn print_state(&self) {
-		println!("  buflen {}", self.buf.len());
-		println!("  buf_occ {}", self.buf_occupancy);
-		println!("pb {:?}", self.payload_bytes);
-		println!("tosend len {:?}", self.to_send.len());
-	}
-
+	/// Force the middleman to try and read bytes from the inner TcpStream.
+	/// Instead of blocking when the socket isn't ready, the call returns Ok(0).
+	/// Errors in reading from the socket emerge as an Err(_) variant.
+	/// 
+	/// It is advised to rely on the `read_write` for reading and writing instead.
 	pub fn read_in(&mut self) -> Result<usize, io::Error> {
 		let mut total = 0;
 		loop {
@@ -92,6 +106,14 @@ impl Middleman {
 		}
 	}
 
+	/// Serialize the given Message, and store it internally for writing to the socket later.
+	/// This call will return Err(_) if serialization of the message fails, or the serialized representation
+	/// is too large for the Middleman to represent (Structures are required to have a serialized
+	/// representation no larger than `std::u32::MAX`).
+	///
+	/// Note that each send() call may serialize an entirely different type of structure.
+	/// Be careful using this feature, as any receive calls on the other end expecting a _different_ type may
+	/// fail to read (at best) or erroniously produce valid (albeit undefined) data silently at worst. 
 	pub fn send<M: Message>(&mut self, m: &M) -> Result<(), SendError> {
 		let encoded: Vec<u8> = bincode::serialize(&m)?;
 		let len = encoded.len();
@@ -105,7 +127,12 @@ impl Middleman {
 		Ok(())
 	}
 
-
+	/// Given some iterator over Message structs, `send`s them each in sequence. 
+	/// The return result is a tuple (a, b) where a gives the number of messages sent successfully,
+	/// and b returns Err(_) with an error if something goes wrong.
+	///
+	/// After encountering the first error, the iteration will cease and the offending message
+	/// _will not_ be sent.
 	pub fn send_all<'m, I, M>(&'m mut self, msg_iter: I) -> (usize, Result<(), SendError>) 
 	where 
 		M: Message + 'm,
@@ -121,6 +148,31 @@ impl Middleman {
 		(total, Ok(()))
 	}
 
+	/// 
+	pub fn try_discard(&mut self) -> bool {
+		if self.payload_bytes.is_none() && self.buf_occupancy >= 4 {
+			self.payload_bytes = Some(
+				(&self.buf[..Self::LEN_BYTES]).read_u32::<LittleEndian>()
+				.expect("reading 4 bytes went wrong?")
+			);
+		}
+		if let Some(pb) = self.payload_bytes {
+			let buf_end = pb as usize + 4;
+			if self.buf_occupancy >= buf_end {
+				self.payload_bytes = None;
+				self.buf.drain(0..buf_end);
+				self.buf_occupancy -= buf_end;
+				return true;
+			}
+		}
+		false
+	}
+
+	/// Attempt to dedserialize some data in the receiving buffer into a single complete structure
+	/// with the given type `M`. If there is insufficient data at the moment, Ok(None) is returned.
+	/// 
+	/// As the type is provided by the reader, it is possible for the sent message to be misinterpreted
+	/// as a different type. At best, this is detected by a failure in deserialization
 	pub fn try_recv<M: Message>(&mut self) -> Result<Option<M>, RecvError> {
 		if self.payload_bytes.is_none() && self.buf_occupancy >= 4 {
 			self.payload_bytes = Some(
@@ -140,6 +192,18 @@ impl Middleman {
 			}
 		}
 		Ok(None)
+	}
+
+	pub fn try_recv_all_map<F,M>(&mut self, mut func: F) -> (usize, Result<(), RecvError>)
+	where M: Message, F: FnMut(M) + Sized {
+		let mut total = 0;
+		loop {
+			match self.try_recv::<M>() {
+				Ok(None) 		=> return (total, Ok(())),
+				Ok(Some(msg)) 	=> { total += 1; func(msg) },
+				Err(e)			=> return (total, Err(e)),
+			};
+		}
 	}
 
 	pub fn try_recv_all<M: Message>(&mut self, dest_vector: &mut Vec<M>) -> (usize, Result<(), RecvError>) {
