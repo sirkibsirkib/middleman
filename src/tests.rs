@@ -217,7 +217,7 @@ fn blocking() {
     	.expect("send fail");
 
     // storage for spilled-over events from recv_blocking()
-	let mut spillover_events = vec![];
+	let mut spillover: Vec<Event> = vec![];
 	let bogus_msg = TestMsg(0, "BOGUS".to_owned());
 
 	// start the main loop. Typical mio polling pattern
@@ -229,7 +229,7 @@ fn blocking() {
 		// unblocks when there is a change of state for any registered mio::Evented object.
 		poll.poll(&mut events, None).ok();
 		for _event in events.iter()
-		.chain(spillover_events.drain(..)) {
+		.chain(spillover.drain(..)) {
 
 			// only one token is registered. no need to check
 			mm.read_in().ok();
@@ -246,12 +246,12 @@ fn blocking() {
 			mm.send(& TestMsg(num+1, String::new())).expect("real send fail");
 
 			// hijack the control flow until a specific message is received.
-			// all unrelated / extra events will spill over into `spillover_events`
+			// all unrelated / extra events will spill over into `spillover`
 			let got = mm.recv_blocking::<TestMsg>(
 				&poll,
 				&mut events,
 				BLOCK_TOKEN,
-				&mut spillover_events,
+				&mut spillover,
 				None,
 			);
 			dprintln!("expecting bogus message: {:?}", &got);
