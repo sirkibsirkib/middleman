@@ -15,7 +15,10 @@ use ::std::{
 		Ipv4Addr,
 		SocketAddr,
 	},
-	collections::HashMap,
+	collections::{
+		HashMap,
+		HashSet,
+	},
 	io::{
 		Read,
 		Write,
@@ -25,7 +28,7 @@ use ::std::{
 };
 
 //set to true and run tests with `-- --nocapture` for full printing
-const DEBUG_PRINTING: bool = true;
+const DEBUG_PRINTING: bool = false;
 
 macro_rules! dprintln {
 	() => ();
@@ -41,8 +44,6 @@ macro_rules! dprintln {
 // Here is the struct we will be sending over the network
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct TestMsg(pub u32, pub String);
-
-// Need to mark it with the `Message` trait
 impl Message for TestMsg {}
 
 const MIO_TOK: Token = Token(0);
@@ -99,6 +100,56 @@ fn single_client_asynch() {
 		if messages_left == 0 { break; }
 	}
 	dprintln!("got all messages!");
+}
+
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct StressMsg(u32);
+impl Message for StressMsg {}
+
+const STRESS1: Token = Token(0);
+const STRESS2: Token = Token(1);
+#[test]
+fn stress() {
+    let (_handle, addr) = mio_echoserver();
+    let stream = TcpStream::connect(&addr).expect("failed to connect!");
+	let poll = Poll::new().unwrap();
+	let mut events = Events::with_capacity(128);
+	stream.set_nodelay(true).unwrap();
+    let mut mm1 = Middleman::new(stream);
+
+    poll.register(&mm1, STRESS1, Ready::readable() | Ready::writable(), PollOpt::edge())
+		.expect("failed to register!");
+
+
+	let mut sum = 0;
+	mm1.send(& StressMsg(100)).ok();
+
+	let timeout = std::time::Duration::from_millis(200);
+	'outer: loop {
+		mm1.write_out().ok();
+		mm1.read_in().ok();
+		poll.poll(&mut events, Some(timeout)).ok();
+		for event in events.iter() {
+			mm1.read_in().ok();
+		}
+		while let Some(StressMsg(value)) = mm1.try_recv::<StressMsg>().unwrap() {
+			if value < 2 {
+				sum += value;
+				dprintln!("... sum {:?}", sum);
+				if sum == 100 {
+					break 'outer;
+				}
+			} else {
+				let a = value / 2;
+				let b = value - a;
+				dprintln!("{} -> {} // {}", value, a, b);
+				mm1.send(& StressMsg(a)).ok();
+				mm1.send(& StressMsg(b)).ok();
+			}
+		}
+		println!("loop");
+	}
 }
 
 
