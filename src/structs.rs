@@ -44,6 +44,16 @@ impl Middleman {
 		}
 	}
 
+	pub fn do_io(&mut self, event: &Event) -> Result<(), io::Error> {
+		if event.readiness().is_readable() {
+			self.read_in()?;
+		}	
+		if event.readiness().is_writable() {
+			self.write_out()?;
+		}
+		Ok(())
+	}
+
 	pub fn write_out(&mut self) -> Result<usize, io::Error> {
 		match self.stream.write(& self.to_send[..]) {
 			Err(ref e) if e.kind() == ErrorKind::WouldBlock => Ok(0),
@@ -53,6 +63,13 @@ impl Middleman {
 			},
 			Err(e) => Err(e),
 		}
+	}
+
+	pub fn print_state(&self) {
+		println!("  buflen {}", self.buf.len());
+		println!("  buf_occ {}", self.buf_occupancy);
+		println!("pb {:?}", self.payload_bytes);
+		println!("tosend len {:?}", self.to_send.len());
 	}
 
 	pub fn read_in(&mut self) -> Result<usize, io::Error> {
@@ -83,8 +100,8 @@ impl Middleman {
 		}
 		let mut encoded_len = vec![];
 		encoded_len.write_u32::<LittleEndian>(len as u32)?;
-		self.to_send.write(&encoded_len).expect("send_buf_write_len");
-		self.to_send.write(&encoded).expect("send_buf_write_payload");
+		self.to_send.extend_from_slice(&encoded_len);
+		self.to_send.extend_from_slice(&encoded);
 		Ok(())
 	}
 
