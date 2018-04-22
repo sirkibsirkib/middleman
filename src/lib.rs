@@ -5,6 +5,9 @@ extern crate byteorder;
 extern crate bincode;
 extern crate mio;
 
+#[cfg(test)]
+#[macro_use] extern crate serde_derive;
+
 ////////////////////// API ////////////////////
 
 mod errors;
@@ -15,12 +18,11 @@ pub use errors::{
 
 mod traits;
 pub use traits::{
-	Middleman,
 	Message,
 };
 
-mod threadless;
-pub use threadless::Threadless;
+mod structs;
+pub use structs::Middleman;
 
 ////////////////////// TESTS ////////////////////
 

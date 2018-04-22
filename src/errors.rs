@@ -13,6 +13,7 @@ pub enum TryRecvError {
 }
 #[derive(Debug)]
 pub enum FatalError {
+	TooBigToRepresent,
 	Io(io::Error),
 	Bincode(Box<bincode::ErrorKind>),
 }

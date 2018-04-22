@@ -1,6 +1,8 @@
-use super::*;
+////////////////////// TEST SETUP //////////////////
 
-#[macro_use] extern crate serde_derive;
+use super::*;
+use mio::*;
+
 
 use ::mio::tcp::{
 	TcpListener,
@@ -13,6 +15,7 @@ use ::std::{
 		Ipv4Addr,
 		SocketAddr,
 	},
+	collections::HashMap,
 	io::{
 		Read,
 		Write,
@@ -21,8 +24,9 @@ use ::std::{
 	thread,
 };
 
-const DEBUG_PRINTING: bool = false;
 //set to true and run tests with `-- --nocapture` for full printing
+const DEBUG_PRINTING: bool = true;
+
 macro_rules! dprintln {
 	() => ();
 	($fmt:expr) => (if DEBUG_PRINTING {print!(concat!($fmt, "\n"))});
@@ -31,6 +35,9 @@ macro_rules! dprintln {
 	});
 }
 
+
+////////////////////// USE CASE EXAMPLE //////////////////
+
 // Here is the struct we will be sending over the network
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct TestMsg(pub u32, pub String);
@@ -38,165 +45,269 @@ struct TestMsg(pub u32, pub String);
 // Need to mark it with the `Message` trait
 impl Message for TestMsg {}
 
+const MIO_TOK: Token = Token(0);
 #[test]
-fn echoes() {
-	use self::TestMsg;
-
-	// start up a server that accepts at 'addr' and will echo all bytes we send
-	// this echo server is just a regular mio implementation (no middleman)
-	dprintln!("Starting echo server");
+fn single_client_asynch() {
+	// connect to echo server
     let (_handle, addr) = mio_echoserver();
 
-    // create out client mio::TcpStream.
-	let stream = TcpStream::connect(&addr).unwrap();
-	dprintln!("Connected to echo server");
-	// Nodelay==true for speed. Works with and without.
+    // set up TcpStream connection for client. wrap it with a Middleman
+    let stream = TcpStream::connect(&addr).expect("failed to connect!");
 	stream.set_nodelay(true).unwrap();
+    let mut mm = Middleman::new(stream);
 
-	// Create our middleman object to protect the `TcpStream` object.
-	dprintln!("Creating middleman");
-    let mut middleman = Threadless::new(stream);
+    // Register our middleman with the mio::Poll object.
+	let poll = Poll::new().unwrap();
+	poll.register(&mm, MIO_TOK, Ready::readable() | Ready::writable(), PollOpt::edge())
+		.expect("failed to register!");
+	let mut events = Events::with_capacity(128);
 
-    // create a sequence of messages we want to send to the echo server
-    let batch = vec![
-		TestMsg(1, "one".to_owned()),
-		TestMsg(2, "two".to_owned()),
-		TestMsg(3, "three".to_owned()),
-		TestMsg(4, "four".to_owned()),
-	];
-    let last_msg = TestMsg(5, "five".to_owned());
+	// send two messages to echo server to get things going
+    let messages = vec![
+    	TestMsg(2, "A".to_owned()), // `A2`
+    	TestMsg(3, "B".to_owned()), // `B3`
+    ];
+    let (total, res) = mm.send_all(messages.iter());
+    assert_eq!(total, 2);
+    assert!(res.is_ok());
 
-	// send a sequence of messages over the wire
-	dprintln!("sending messages 1,2,3,4");
-    let (num_sent, result) = middleman.send_all(batch.iter());
-    assert_eq!(num_sent, 4);
-    result.unwrap();
+	let mut messages_left = 7;  // {A2, A1, A0,     B3, B2, B1, B0}
 
-    // receive the echo'd messages. check they are correct
-    for msg in batch.iter() {
-		dprintln!("got {:?}", msg);
-    	assert_eq!(
-    		// block until we receive one message
-    		&middleman.recv::<TestMsg>().unwrap(), 	//message we get
-    		msg, 									// message we expect
-    	);
-    }
+	// start the main loop. Typical mio polling pattern
+	loop {
+		// send out any outgoing bytes
+		mm.write_out().ok();
 
-	// send a single message over the wire
-	dprintln!("sending message 5");
-    middleman.send(&last_msg).unwrap();
+		// poll the underlying socket to cause it to progress.
+		// unblocks when there is a change of state for any registered mio::Evented object.
+		poll.poll(&mut events, None).ok();
+		for _event in events.iter() {
 
-    loop { //spin until we receive message 5!
+			// only one token is registered. no need to check
+			mm.read_in().ok();
+		}
 
-    	// try read a message (nonblocking!)
-    	match middleman.try_recv::<TestMsg>() {
-    		Err(TryRecvError::ReadNotReady) => {
-    			// the message hasn't come back yet!
-				dprintln!("... waiting for last msg ...");
-    		},
-    		Ok(msg) => {
-				dprintln!("got {:?}", msg);
-    			assert_eq!(&msg, &last_msg);
-				dprintln!("got last message");
-    			break;
-    		},
-    		Err(_) => panic!("Something went wrong!"),
-    	}
-    }
-    //all went well
-}
-
-#[test]
-fn many_blocking() {
-	let num_threads = 20;
-	let num_messages = 10;
-
-    let (_handle, addr) = mio_echoserver();
-	let mut handles = (0..num_threads)
-	.map(|x| {
-		thread::spawn(move || {
-			let stream = TcpStream::connect(&addr).unwrap();
-			stream.set_nodelay(true).unwrap();
-		    let mm = Threadless::new(stream);
-			blocking(mm, x, &format!("[{:02}]", x), num_messages);
-		})
-	})
-	.collect::<Vec<_>>();
-	for h in handles.drain(..) {
-		h.join().unwrap();
-	}
-}
-
-
-#[test]
-fn many_nonblocking() {
-	let num_threads = 5;
-	let num_messages = 10;
-
-    let (_handle, addr) = mio_echoserver();
-	let mut handles = (0..num_threads)
-	.map(|x| {
-		thread::spawn(move || {
-			let stream = TcpStream::connect(&addr).unwrap();
-			stream.set_nodelay(true).unwrap();
-		    let mm = Threadless::new(stream);
-			nonblocking(mm, x, &format!("[{:02}]", x), num_messages)
-		})
-	})
-	.collect::<Vec<_>>();
-	for h in handles.drain(..) {
-		h.join().unwrap();
-	}
-}
-
-fn blocking<M: Middleman>(mut mm: M, index: u32, name: &str, num_messages: u32) {
-	let messages = (0..num_messages)
-	.map(|x| TestMsg(x, name.to_owned()))
-	.collect::<Vec<_>>();
-	for m in messages.iter() {
-		mm.send(m).unwrap();
-	}
-	for sent in messages.iter() {
-		let msg = mm.recv::<TestMsg>()
-		.expect("crashed on recv!");
-		assert_eq!(&msg, sent);
-	}
-	dprintln!("t index {} got all messages correctly", index);
-}
-
-
-fn nonblocking<M: Middleman>(mut mm: M, index: u32, name: &str, num_messages: u32) {
-	let messages = (0..num_messages)
-	.map(|x| TestMsg(x, name.to_owned()))
-	.collect::<Vec<_>>();
-
-	for m in messages.iter() {
-		mm.send(m).unwrap();
-	}
-
-	let mut got = vec![];
-	let patience = time::Duration::from_millis(5000);
-	let sleepy = time::Duration::from_millis(1);
-	let start = time::Instant::now();	
-
-	let mut loops = 0;
-	while got.len() < num_messages as usize && start.elapsed() <= patience {
-		loops += 1;
-		thread::sleep(sleepy);
-		match mm.try_recv::<TestMsg>() {
-			Ok(TestMsg(a, _b)) => {
-				got.push(a);
-			},
-			Err(TryRecvError::ReadNotReady) => (), // spin!
-			Err(TryRecvError::Fatal(f)) => {
-				dprintln!("client {} crashed with {:?}", index, f);
-				return;
+		// try to recv ready messages
+		while let Some(TestMsg(num, string)) = mm.try_recv::<TestMsg>()
+		.expect("socket died!") {
+			dprintln!("got msg TestMsg({:?}, {:?})", &num, &string);
+			messages_left -= 1;
+			if num > 0 {
+				mm.send(& TestMsg(num-1, string)).ok();
 			}
 		}
+		if messages_left == 0 { break; }
 	}
-	dprintln!("t index {} did {} loops. got {}/{}\t{:?}", index, loops, got.len(), num_messages, &got);
+	dprintln!("got all messages!");
 }
 
+
+
+const C1_TOK: Token = Token(0);
+const C2_TOK: Token = Token(1);
+
+#[test]
+fn two_clients_asynch() {
+	// start the echo server for the test
+    let (_handle, addr) = mio_echoserver();
+
+    // create the mio primitives we need
+	let poll = Poll::new().unwrap();
+	let mut events = Events::with_capacity(128);
+
+    // now with two clients there are two states to keep track of.
+    // we use the mio::Token to identify them.
+    // we keep track of how many messages each client is still expecting to receive
+    let mut states: HashMap<Token, (Middleman, u32)>
+    	= HashMap::new();
+
+    for token in vec![C1_TOK, C2_TOK] {
+
+    	// set up TcpStream connection for clients. wrap each up with a Middleman
+    	let stream = TcpStream::connect(&addr)
+    		.expect("failed to connect!");
+		stream.set_nodelay(true).unwrap();
+	    let mut mm = Middleman::new(stream);
+
+    	// Register our middlemen with the mio::Poll object.
+	    poll.register(&mm, token, Ready::readable() | Ready::writable(), PollOpt::edge())
+			.expect("failed to register!");
+
+		// send some starting messages to get things going
+		mm.send(& TestMsg(2, "A".to_owned()) )
+			.is_ok();
+		mm.send(& TestMsg(3, "B".to_owned()) )
+			.is_ok();
+
+		let state = (mm, 7);
+		states.insert(token, state);
+    };
+
+    // a variable to remember which Middlemen are finished.
+	let mut finished: Vec<Token> = vec![];
+
+	// start the main loop. Typical mio polling pattern
+	while !states.is_empty() {
+
+		// send out any outgoing bytes for each middleman
+		for &mut (ref mut mm, _to_go) in states.values_mut() {
+    		mm.write_out().ok();
+    	}
+
+		// poll the underlying socket to cause it to progress.
+		// unblocks when there is a change of state for any registered mio::Evented object.
+		poll.poll(&mut events, None).ok();
+		for event in events.iter() { 
+
+			// this event is associated with only one middleman.
+			let tok = event.token();
+			let &mut (ref mut mm, _to_go) = states.get_mut(& tok)
+				.expect("unexpected token");
+			mm.read_in().ok();
+		}
+
+		// now that socket IO is taken care of, we can do the interesting work
+		for (tok, &mut (ref mut mm, ref mut to_go)) in states.iter_mut() {
+			while let Some(TestMsg(num, string)) = mm.try_recv::<TestMsg>()
+			.expect("socket died!") {
+				dprintln!("{:?} got msg TestMsg({:?}, {:?})", tok, &num, &string);
+				*to_go -= 1;
+				if num > 0 {
+					mm.send(& TestMsg(num-1, string)).ok();
+				}
+			}
+			if *to_go == 0 {
+				// our work here is done! we push our token so we can
+				// be removed from the HashMap and dropped.
+				// we can
+				finished.push(*tok);
+			}
+		}
+
+		// remove and drop any middlemen that are done with their work
+		for f in finished.drain(..) {
+			//drop this middleman
+			states.remove(& f);
+		}
+	}
+	dprintln!("all Middlemen did their work to completion!");
+}
+
+const BLOCK_TOKEN: Token = Token(0);
+#[test]
+fn blocking() {
+	// connect to echo server
+    let (_handle, addr) = mio_echoserver();
+
+    // set up TcpStream connection for client. wrap it with a Middleman
+    let stream = TcpStream::connect(&addr).expect("failed to connect!");
+	stream.set_nodelay(true).unwrap();
+    let mut mm = Middleman::new(stream);
+
+    // Register our middleman with the mio::Poll object.
+	let poll = Poll::new().unwrap();
+	let mut events = Events::with_capacity(128);
+	poll.register(&mm, BLOCK_TOKEN, Ready::readable() | Ready::writable(), PollOpt::edge())
+		.expect("failed to register!");
+
+	// send two messages to echo server to get things going
+	// we are going to count from 0 to 20
+    
+    mm.send(& TestMsg(0, String::new()))
+    	.expect("send fail");
+
+    // storage for spilled-over events from recv_blocking()
+	let mut spillover_events = vec![];
+	let bogus_msg = TestMsg(0, "BOGUS".to_owned());
+
+	// start the main loop. Typical mio polling pattern
+	'outer: loop {
+		// send out any outgoing bytes
+		mm.write_out().ok();
+
+		// poll the underlying socket to cause it to progress.
+		// unblocks when there is a change of state for any registered mio::Evented object.
+		poll.poll(&mut events, None).ok();
+		for _event in events.iter()
+		.chain(spillover_events.drain(..)) {
+
+			// only one token is registered. no need to check
+			mm.read_in().ok();
+		}
+
+		// try to recv ready messages
+		while let Some(TestMsg(num, _)) = mm.try_recv::<TestMsg>()
+		.expect("socket died!") {
+			if num == 20 {
+				break 'outer;
+			}
+
+			mm.send(& bogus_msg).expect("bogus send fail");
+			mm.send(& TestMsg(num+1, String::new())).expect("real send fail");
+
+			// hijack the control flow until a specific message is received.
+			// all unrelated / extra events will spill over into `spillover_events`
+			let got = mm.recv_blocking::<TestMsg>(
+				&poll,
+				&mut events,
+				BLOCK_TOKEN,
+				&mut spillover_events,
+				None,
+			);
+			dprintln!("expecting bogus message: {:?}", &got);
+			assert_eq!(&got.expect("err").expect("none"), &bogus_msg);
+		}
+	}
+}
+
+#[test]
+fn try_recv_all() {
+	// connect to echo server
+    let (_handle, addr) = mio_echoserver();
+
+    // set up TcpStream connection for client. wrap it with a Middleman
+    let stream = TcpStream::connect(&addr).expect("failed to connect!");
+	stream.set_nodelay(true).unwrap();
+    let mut mm = Middleman::new(stream);
+
+    // Register our middleman with the mio::Poll object.
+	let poll = Poll::new().unwrap();
+	poll.register(&mm, MIO_TOK, Ready::readable() | Ready::writable(), PollOpt::edge())
+		.expect("failed to register!");
+	let mut events = Events::with_capacity(128);
+
+	for i in 0..1000 {
+		let msg = TestMsg(i, format!("num={}", i));
+		mm.send(& msg).ok();
+	}
+
+	// start the main loop. Typical mio polling pattern
+	let mut incoming: Vec<TestMsg> = vec![];
+	let mut to_go = 100;
+	while to_go > 0 {
+		// send out any outgoing bytes
+		mm.write_out().ok();
+
+		// poll the underlying socket to cause it to progress.
+		// unblocks when there is a change of state for any registered mio::Evented object.
+		poll.poll(&mut events, None).ok();
+		for _event in events.iter() {
+
+			// only one token is registered. no need to check
+			mm.read_in().ok();
+		}
+
+		// try to recv ready messages
+		mm.try_recv_all(&mut incoming).1.ok();
+		for _msg in incoming.drain(..) {
+			to_go -= 1;
+		}
+	}
+	dprintln!("got all messages!");
+}
+
+
+/////////////////// ECHO SERVER FOR TEST CLIENTS ///////////////////
 
 type ThreadHandle = std::thread::JoinHandle<std::net::SocketAddr>;
 
@@ -250,7 +361,7 @@ fn server_handle(mut stream: TcpStream) {
 	poll.register(&stream, Token(21), Ready::readable() | Ready::writable(),
 	              PollOpt::edge()).unwrap();
 	let mut events = Events::with_capacity(128);
-	let mut buf = [0u8; 1024];
+	let mut buf = [0u8; 2048];
 	loop {
 	    poll.poll(&mut events, None).unwrap();
 	    for event in events.iter() {
@@ -272,14 +383,4 @@ fn server_handle(mut stream: TcpStream) {
     		}
 	    }
 	}
-}
-
-fn hex_string(bytes: &[u8]) -> String {
-	let mut s = String::new();
-	s.push('[');
-	for b in bytes.iter() {
-		s.push_str(&format!("{:0X} ", *b));
-	}
-	s.push(']');
-	s
 }

@@ -7,6 +7,13 @@ use mio::channel::{
 
 // const Particle: u8 =0u8;
 
+enum RegState {
+	NeverBeen,
+	BeenBefore,
+	Currently,
+	Dinky,
+}
+
 pub struct OneThread {
 	// ack_r: Receiver<Particle>, 
 	poll: Poll,
@@ -14,15 +21,7 @@ pub struct OneThread {
 	send_s: Sender<Box<Message>>, 
 	recv_r: Receiver<Box<Message>>,
 	handle: u32, //threadhandle
-}
-
-impl Middleman {
-	const NUM_EVENTS: usize = 64;
-	const SEND_S_TOK: Token = Token(3);
-	const RECV_R_TOK: Token = Token(4);
-
-
-	fn wait_for_ack(&mut self)
+	registration: RegState,
 }
 
 impl Middleman for OneThread {
