@@ -12,13 +12,13 @@ extern crate mio;
 
 mod errors;
 pub use errors::{
-	SendError,
-	RecvError,
+    SendError,
+    RecvError,
 };
 
 mod traits;
 pub use traits::{
-	Message,
+    Message,
 };
 
 mod structs;

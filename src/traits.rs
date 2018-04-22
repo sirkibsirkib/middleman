@@ -1,6 +1,6 @@
 use serde::{
-	Serialize, 
-	de::DeserializeOwned,
+    Serialize, 
+    de::DeserializeOwned,
 };
 
 /// This marker trait must be implemented for any structure intended for
