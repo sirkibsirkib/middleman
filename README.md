@@ -39,13 +39,11 @@ poll.register(&mm, CLIENT, Ready::readable() | Ready::writable(), PollOpt::edge(
 	.expect("failed to register!");
 
 let mut incoming: Vec<TestMsg> = vec![];
-loop {
-	mm.write_out().ok();
-	
+loop {	
 	poll.poll(&mut events, None).ok();
 	for event in events.iter() {
 		match event.token() {
-			MIO_TOKEN => mm.read_in().ok(),
+			MIO_TOKEN => mm.read_write(&event).ok(),
 			_ => unreachable!(),
 		}
 	}
@@ -68,13 +66,11 @@ To facilitate this, the function `recv_blocking` requires some extra arguments:
 ...
 let mut spillover: Vec<Event> = vec![];
 loop {
-	mm.write_out().ok();
 	poll.poll(&mut events, None).ok();
-	for _event in events.iter().chain(spillover.drain(..)) { 
-	// need to also traverse events that may have been skimmed over during `recv_blocking` call
 
-		// only one token is registered. no need to check
-		mm.read_in().ok();
+	// need to also traverse events that may have been skimmed over during `recv_blocking` call
+	for _event in events.iter().chain(spillover.drain(..)) { 
+		mm.read_write(&event).ok();
 	}
 	...
 	match mm.recv_blocking::<TestMsg>(

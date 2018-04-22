@@ -12,8 +12,8 @@ extern crate mio;
 
 mod errors;
 pub use errors::{
-	TryRecvError,
-	FatalError
+	SendError,
+	RecvError,
 };
 
 mod traits;

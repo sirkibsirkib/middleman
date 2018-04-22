@@ -80,7 +80,7 @@ fn single_client_asynch() {
 		// unblocks when there is a change of state for any registered mio::Evented object.
 		poll.poll(&mut events, None).ok();
 		for event in events.iter() {
-			mm.do_io(&event).ok();
+			mm.read_write(&event).ok();
 		}
 
 		// try to recv ready messages
@@ -121,7 +121,7 @@ fn stress() {
 	'outer: loop {
 		poll.poll(&mut events, None).ok();
 		for event in events.iter() {
-			mm.do_io(&event).ok();
+			mm.read_write(&event).ok();
 		}
 		while let Some(StressMsg(value)) = mm.try_recv::<StressMsg>().unwrap() {
 			if value < 2 {
@@ -196,7 +196,7 @@ fn two_clients_asynch() {
 			let tok = event.token();
 			let &mut (ref mut mm, _to_go) = states.get_mut(& tok)
 				.expect("unexpected token");
-			mm.do_io(&event).ok();
+			mm.read_write(&event).ok();
 		}
 
 		// now that socket IO is taken care of, we can do the interesting work
@@ -259,7 +259,7 @@ fn blocking() {
 		// unblocks when there is a change of state for any registered mio::Evented object.
 		poll.poll(&mut events, None).ok();
 		for event in events.iter().chain(spillover.drain(..)) {
-			mm.do_io(&event).ok();
+			mm.read_write(&event).ok();
 		}
 
 		// try to recv ready messages
@@ -320,7 +320,7 @@ fn try_recv_all() {
 		// unblocks when there is a change of state for any registered mio::Evented object.
 		poll.poll(&mut events, None).ok();
 		for event in events.iter() {
-			mm.do_io(&event).ok();
+			mm.read_write(&event).ok();
 		}
 
 		// try to recv ready messages

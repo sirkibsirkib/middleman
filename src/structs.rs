@@ -44,7 +44,7 @@ impl Middleman {
 		}
 	}
 
-	pub fn do_io(&mut self, event: &Event) -> Result<(), io::Error> {
+	pub fn read_write(&mut self, event: &Event) -> Result<(), io::Error> {
 		if event.readiness().is_readable() {
 			self.read_in()?;
 		}	
@@ -92,11 +92,11 @@ impl Middleman {
 		}
 	}
 
-	pub fn send<M: Message>(&mut self, m: &M) -> Result<(), FatalError> {
+	pub fn send<M: Message>(&mut self, m: &M) -> Result<(), SendError> {
 		let encoded: Vec<u8> = bincode::serialize(&m)?;
 		let len = encoded.len();
 		if len > ::std::u32::MAX as usize {
-			return Err(FatalError::TooBigToRepresent);
+			return Err(SendError::TooBigToRepresent);
 		}
 		let mut encoded_len = vec![];
 		encoded_len.write_u32::<LittleEndian>(len as u32)?;
@@ -106,7 +106,7 @@ impl Middleman {
 	}
 
 
-	pub fn send_all<'m, I, M>(&'m mut self, msg_iter: I) -> (usize, Result<(), FatalError>) 
+	pub fn send_all<'m, I, M>(&'m mut self, msg_iter: I) -> (usize, Result<(), SendError>) 
 	where 
 		M: Message + 'm,
 		I: Iterator<Item = &'m M>,
@@ -121,7 +121,7 @@ impl Middleman {
 		(total, Ok(()))
 	}
 
-	pub fn try_recv<M: Message>(&mut self) -> Result<Option<M>, FatalError> {
+	pub fn try_recv<M: Message>(&mut self) -> Result<Option<M>, RecvError> {
 		if self.payload_bytes.is_none() && self.buf_occupancy >= 4 {
 			self.payload_bytes = Some(
 				(&self.buf[..Self::LEN_BYTES]).read_u32::<LittleEndian>()?
@@ -142,7 +142,7 @@ impl Middleman {
 		Ok(None)
 	}
 
-	pub fn try_recv_all<M: Message>(&mut self, dest_vector: &mut Vec<M>) -> (usize, Result<(), FatalError>) {
+	pub fn try_recv_all<M: Message>(&mut self, dest_vector: &mut Vec<M>) -> (usize, Result<(), RecvError>) {
 		let mut total = 0;
 		loop {
 			match self.try_recv::<M>() {
@@ -160,7 +160,7 @@ impl Middleman {
 		                         events: &mut Events,
 		                         my_tok: Token,
 		                         extra_events: &mut Vec<Event>,
-		                         mut timeout: Option<time::Duration>) -> Result<Option<M>, FatalError> {
+		                         mut timeout: Option<time::Duration>) -> Result<Option<M>, RecvError> {
 
 		if let Some(msg) = self.try_recv::<M>()? {
 			// trivial case.
