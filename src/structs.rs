@@ -41,6 +41,15 @@ pub struct Middleman {
 impl Middleman {
 	const LEN_BYTES: usize = 4;
 
+	fn check_payload(&mut self) {
+		if self.payload_bytes.is_none() && self.buf_occupancy >= 4 {
+			self.payload_bytes = Some(
+				(&self.buf[..Self::LEN_BYTES]).read_u32::<LittleEndian>()
+				.expect("reading 4 bytes went wrong?")
+			);
+		}
+	}
+
 	/// Wraps the given `mio::TcpStream` in a new middleman.
 	pub fn new(stream: TcpStream) -> Middleman {
 		Self {
@@ -148,15 +157,6 @@ impl Middleman {
 		(total, Ok(()))
 	}
 
-	fn check_payload(&mut self) {
-		if self.payload_bytes.is_none() && self.buf_occupancy >= 4 {
-			self.payload_bytes = Some(
-				(&self.buf[..Self::LEN_BYTES]).read_u32::<LittleEndian>()
-				.expect("reading 4 bytes went wrong?")
-			);
-		}
-	}
-
 	/// Attempt to read one message worth of bytes from the input buffer and discard it
 	/// This operation doesn't require knowing the type of the struct. As such, this 
 	/// can be used to discard a message if somehow it is unserializable.
@@ -179,7 +179,8 @@ impl Middleman {
 	/// with the given type `M`. If there is insufficient data at the moment, Ok(None) is returned.
 	/// 
 	/// As the type is provided by the reader, it is possible for the sent message to be misinterpreted
-	/// as a different type. At best, this is detected by a failure in deserialization
+	/// as a different type. At best, this is detected by a failure in deserialization. If an error occurs, 
+	/// the data is _not_ consumed from the Middleman. Subsequent reads will operate on the same data. 
 	pub fn try_recv<M: Message>(&mut self) -> Result<Option<M>, RecvError> {
 		self.check_payload();
 		if let Some(pb) = self.payload_bytes {
@@ -197,6 +198,14 @@ impl Middleman {
 		Ok(None)
 	}
 
+	/// Keep attempting to call `try_recv` until the next message is no longer ready.
+	/// Will `push` received messages into the provided destination buffer in the order received.
+	/// See `try_recv` for more information.
+	/// 
+	/// Returns (a, b) where a is the number of messages successfully received and 
+	/// b is Err(_) if an error occurs attempting to deserialize a message. Upon the first error,
+	/// no further messages _nor_ the offending message are recieved or removed from the buffer. Subsequent
+	/// recv() calls will thus operate on the same data that caused the error before.
 	pub fn try_recv_all<M: Message>(&mut self, dest_vector: &mut Vec<M>) -> (usize, Result<(), RecvError>) {
 		let mut total = 0;
 		loop {
@@ -208,8 +217,17 @@ impl Middleman {
 		}
 	}
 
-	// Err only if something fatal
-	// Ok(None) only if timout.is_some()
+	/// Hijack the mio event loop, reading and writing to the socket as polling allows. Events not related to 
+	/// the recv() of this middleman (determined from the provided `mio::Token`) are pushed into the provided
+	/// extra_events vector. Returns Ok(Some(_)) if a message was successfully received. May return Ok(None) if
+	/// the user provides as `timeout` some non-none Duration. Returns Err(_) if something goes wrong with reading 
+	/// from the socket or deserializing the message. See `try_recv` for more information. 
+	///
+	/// WARNING: The user should take care to iterate over these events also, as without them
+	/// all the `Evented` objects registered with the provided poll object might experience lost wakeups.
+	/// It is suggested that in the event of any recv_blocking calls in your loop, you extend the event
+	/// loop with a drain() on the same vector passed here as `extra_events`
+	/// (using the iterator `chain` function, for example.)
 	pub fn recv_blocking<M: Message>(&mut self,
 		                         poll: &Poll,
 		                         events: &mut Events,
@@ -261,7 +279,9 @@ impl Middleman {
 		}
 	}
 
-	/// 
+	/// A convenience function similar to `try_recv_all`, but instead calls a provided function for each
+	/// successfully received message instead of pushing them to a provided buffer.
+	/// See `try_recv_all` and `try_recv` for moree information
 	pub fn try_recv_all_map<F,M>(&mut self, mut func: F) -> (usize, Result<(), RecvError>)
 	where M: Message, F: FnMut(M) + Sized {
 		let mut total = 0;
@@ -280,7 +300,7 @@ impl Middleman {
 		self.payload_bytes.is_some()
 	}
 
-	pub fn try_recv_bytes(&mut self, dest_buffer: &mut Vec) -> Option<u32> {
+	pub fn try_recv_bytes(&mut self, dest_buffer: &mut Vec<u8>) -> Option<u32> {
 		self.check_payload();
 		if let Some(pb) = self.payload_bytes {
 			let buf_end = pb as usize + 4;
@@ -291,7 +311,7 @@ impl Middleman {
 				self.payload_bytes = None;
 				self.buf.drain(0..buf_end);
 				self.buf_occupancy -= buf_end;
-				Some(pb)
+				return Some(pb);
 			}
 		}
 		None
