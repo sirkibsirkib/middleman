@@ -73,13 +73,8 @@ loop {
         mm.read_write(&event).ok();
     }
     ...
-    match mm.recv_blocking::<TestMsg>(
-        &poll,
-        &mut events,
-        CLIENT,
-        &mut spillover,
-        None, // optional timeout
-    ) {
+    match mm.recv_blocking::<TestMsg>(&poll, &mut events, CLIENT,
+    	                              &mut spillover, None) {
         Err(e)        => ... ,    
         Ok(None)      => ... , // timed out
         Ok(Some(msg)) => ... ,
