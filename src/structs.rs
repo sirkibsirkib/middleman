@@ -295,11 +295,17 @@ impl Middleman {
 	}
 
 
+	/// Returns true if the internal buffer current holds 1+ messages, ready to be received.
+	/// In this case, `try_recv` and similar functions are guaranteed to return a message.
 	pub fn recv_ready(&mut self) -> bool {
 		self.check_payload();
 		self.payload_bytes.is_some()
 	}
 
+	/// Attempts to read a message from the internal buffer, just like `try_recv`,
+	/// but instead makes no attempt to deserialize the struct data. Instead,
+	/// bytes are appended to the provided byte buffer.
+	/// For this reason, no type annotation is required.
 	pub fn try_recv_bytes(&mut self, dest_buffer: &mut Vec<u8>) -> Option<u32> {
 		self.check_payload();
 		if let Some(pb) = self.payload_bytes {
@@ -317,7 +323,8 @@ impl Middleman {
 		None
 	}
 
-
+	/// Similar to `try_recv`, whether or not the call succeeds, the data is not removed from
+	/// the internal buffer. Subsequent calls will thus repeatedely deserialize the same bytes.
 	pub fn try_peek<M: Message>(&mut self) -> Result<Option<M>, RecvError> {
 		self.check_payload();
 		if let Some(pb) = self.payload_bytes {
