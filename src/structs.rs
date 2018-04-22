@@ -148,14 +148,20 @@ impl Middleman {
 		(total, Ok(()))
 	}
 
-	/// 
-	pub fn try_discard(&mut self) -> bool {
+	fn check_payload(&mut self) {
 		if self.payload_bytes.is_none() && self.buf_occupancy >= 4 {
 			self.payload_bytes = Some(
 				(&self.buf[..Self::LEN_BYTES]).read_u32::<LittleEndian>()
 				.expect("reading 4 bytes went wrong?")
 			);
 		}
+	}
+
+	/// Attempt to read one message worth of bytes from the input buffer and discard it
+	/// This operation doesn't require knowing the type of the struct. As such, this 
+	/// can be used to discard a message if somehow it is unserializable.
+	pub fn try_discard(&mut self) -> bool {
+		self.check_payload();
 		if let Some(pb) = self.payload_bytes {
 			let buf_end = pb as usize + 4;
 			if self.buf_occupancy >= buf_end {
@@ -168,17 +174,14 @@ impl Middleman {
 		false
 	}
 
+
 	/// Attempt to dedserialize some data in the receiving buffer into a single complete structure
 	/// with the given type `M`. If there is insufficient data at the moment, Ok(None) is returned.
 	/// 
 	/// As the type is provided by the reader, it is possible for the sent message to be misinterpreted
 	/// as a different type. At best, this is detected by a failure in deserialization
 	pub fn try_recv<M: Message>(&mut self) -> Result<Option<M>, RecvError> {
-		if self.payload_bytes.is_none() && self.buf_occupancy >= 4 {
-			self.payload_bytes = Some(
-				(&self.buf[..Self::LEN_BYTES]).read_u32::<LittleEndian>()?
-			);
-		}
+		self.check_payload();
 		if let Some(pb) = self.payload_bytes {
 			let buf_end = pb as usize + 4;
 			if self.buf_occupancy >= buf_end {
@@ -192,18 +195,6 @@ impl Middleman {
 			}
 		}
 		Ok(None)
-	}
-
-	pub fn try_recv_all_map<F,M>(&mut self, mut func: F) -> (usize, Result<(), RecvError>)
-	where M: Message, F: FnMut(M) + Sized {
-		let mut total = 0;
-		loop {
-			match self.try_recv::<M>() {
-				Ok(None) 		=> return (total, Ok(())),
-				Ok(Some(msg)) 	=> { total += 1; func(msg) },
-				Err(e)			=> return (total, Err(e)),
-			};
-		}
 	}
 
 	pub fn try_recv_all<M: Message>(&mut self, dest_vector: &mut Vec<M>) -> (usize, Result<(), RecvError>) {
@@ -269,6 +260,58 @@ impl Middleman {
 			}
 		}
 	}
+
+	/// 
+	pub fn try_recv_all_map<F,M>(&mut self, mut func: F) -> (usize, Result<(), RecvError>)
+	where M: Message, F: FnMut(M) + Sized {
+		let mut total = 0;
+		loop {
+			match self.try_recv::<M>() {
+				Ok(None) 		=> return (total, Ok(())),
+				Ok(Some(msg)) 	=> { total += 1; func(msg) },
+				Err(e)			=> return (total, Err(e)),
+			};
+		}
+	}
+
+
+	pub fn recv_ready(&mut self) -> bool {
+		self.check_payload();
+		self.payload_bytes.is_some()
+	}
+
+	pub fn try_recv_bytes(&mut self, dest_buffer: &mut Vec) -> Option<u32> {
+		self.check_payload();
+		if let Some(pb) = self.payload_bytes {
+			let buf_end = pb as usize + 4;
+			if self.buf_occupancy >= buf_end {
+				dest_buffer.extend_from_slice(
+					&self.buf[Self::LEN_BYTES..buf_end]
+				);
+				self.payload_bytes = None;
+				self.buf.drain(0..buf_end);
+				self.buf_occupancy -= buf_end;
+				Some(pb)
+			}
+		}
+		None
+	}
+
+
+	pub fn try_peek<M: Message>(&mut self) -> Result<Option<M>, RecvError> {
+		self.check_payload();
+		if let Some(pb) = self.payload_bytes {
+			let buf_end = pb as usize + 4;
+			if self.buf_occupancy >= buf_end {
+				let decoded: M = bincode::deserialize(
+					&self.buf[Self::LEN_BYTES..buf_end]
+				)?;
+				return Ok(Some(decoded))
+			}
+		}
+		Ok(None)
+	}
+
 }
 
 
