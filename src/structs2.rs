@@ -48,9 +48,9 @@ impl Middleman2 {
         }
     }
 
-    pub fn new(stream: std::net::TcpStream) -> Middleman2 {
-        Self {
-            stream: mio::net::TcpStream::from_stream(stream).expect("failed to mio-ify"),
+    pub fn new(stream: mio::net::TcpStream) -> Middleman2 {
+    	Self {
+            stream: stream,
             buf: Vec::with_capacity(128),
             buf_occupancy: 0,
             payload_bytes: None,
@@ -76,28 +76,61 @@ impl Middleman2 {
                 Err(e) => return Err(e),
             };
         }
+
+     //    loop {
+    	// 	self.check_payload();
+    	// 	match self.payload_bytes {
+	    // 		Some(pb) => {
+	    // 			let tot = pb as usize + 4;
+	    // 			if self.buf.len() < tot {
+	    // 				self.buf.resize(tot, 0u8);
+	    // 			}
+	    // 			self.stream.read_exact(&mut self.buf[4..tot]).is_ok();
+	    // 			self.buf_occupancy = tot;
+	    // 			return Ok(())
+	    // 		},
+	    // 		None => {
+	    // 			if self.buf.len() < 4 {
+	    // 				self.buf.resize(128, 0u8);
+	    // 			}
+	    // 			self.stream.read_exact(&mut self.buf[..4])?;
+	    // 			self.buf_occupancy = 4;			 
+	    // 		},
+	    // 	}
+    	// }
     }
 
     pub fn send<M: Message>(&mut self, m: &M) -> Result<(), SendError> {
-    	let m_len = bincode::serialized_size(&m)?;
-        if m_len > ::std::u32::MAX as u64 {
-            return Err(SendError::TooBigToRepresent);
-        }
-        bincode::serialize_into(&mut self.stream, &(m_len as u32))?;
-        bincode::serialize_into(&mut self.stream, m)?;
-        Ok(())
+    	//this approach is like 6x faster?
+    	self.send_packed(
+    		& Self::pack_message(m)?
+    	)?;
+    	Ok(())
+
+
+    	// let m_len = bincode::serialized_size(&m)?;
+     //    if m_len > ::std::u32::MAX as u64 {
+     //        return Err(SendError::TooBigToRepresent);
+     //    }
+     //    bincode::serialize_into(&mut self.stream, &(m_len as u32))?;
+     //    bincode::serialize_into(&mut self.stream, m)?;
+     //    Ok(())
     }
 
     pub fn send_packed(&mut self, msg: & PackedMessage) -> Result<(), io::Error> {
-    	let mut sent = 0;
-    	let msg_len = msg.0.len();
-    	while sent < msg_len {
-    		match self.stream.write(& msg.0[sent..msg_len]) {
-    			Ok(sent_now) => sent += sent_now,
-    			Err(e) => return Err(e),
-    		}
-    	}
-    	Ok(())
+    	self.stream.write_all(&msg.0)
+
+
+
+    	// let mut sent = 0;
+    	// let msg_len = msg.0.len();
+    	// while sent < msg_len {
+    	// 	match self.stream.write(& msg.0[sent..msg_len]) {
+    	// 		Ok(sent_now) => sent += sent_now,
+    	// 		Err(e) => return Err(e),
+    	// 	}
+    	// }
+    	// Ok(())
     }
 
     // fn send_bytes(&mut self, bytes: &[u8]) -> Result<(), SendError> {
@@ -256,7 +289,6 @@ impl Middleman2 {
             if self.buf_occupancy >= buf_end {
             	let mut vec = self.buf.drain(0..buf_end)
             	.collect::<Vec<_>>();
-
                 self.payload_bytes = None;
                 self.buf_occupancy -= buf_end;
                 return Ok(Some(PackedMessage(vec)))
@@ -265,66 +297,27 @@ impl Middleman2 {
         Ok(None)
     }
 
-    // pub fn recv_is_ready(&mut self) -> bool {
-    // 	self.read_in();
-    //     self.check_payload();
-    //     self.payload_bytes.is_some()
-    // }
-
-    // pub fn recv_bytes(&mut self, dest_buffer: &mut Vec<u8>) -> Option<u32> {
-    // 	// self.read_in();
-    //     self.check_payload();
-    //     if let Some(pb) = self.payload_bytes {
-    //         let buf_end = pb as usize + 4;
-    //         if self.buf_occupancy >= buf_end {
-    //             dest_buffer.extend_from_slice(
-    //                 &self.buf[Self::LEN_BYTES..buf_end]
-    //             );
-    //             self.payload_bytes = None;
-    //             self.buf.drain(0..buf_end);
-    //             self.buf_occupancy -= buf_end;
-    //             return Some(pb);
-    //         }
-    //     }
-    //     None
-    // }
-
-    // pub fn peek<M: Message>(&mut self) -> Result<Option<M>, RecvError> {
-    // 	self.read_in();
-    //     self.check_payload();
-    //     if let Some(pb) = self.payload_bytes {
-    //         let buf_end = pb as usize + 4;
-    //         if self.buf_occupancy >= buf_end {
-    //             let decoded: M = bincode::deserialize(
-    //                 &self.buf[Self::LEN_BYTES..buf_end]
-    //             )?;
-    //             return Ok(Some(decoded))
-    //         }
-    //     }
-    //     Ok(None)
-    // }
-
+    pub fn peek<M: Message>(&mut self) -> Result<Option<M>, RecvError> {
+        if let Some(pb) = self.payload_bytes {
+            let buf_end = pb as usize + 4;
+            if self.buf_occupancy >= buf_end {
+                let decoded: M = bincode::deserialize(
+                    &self.buf[Self::LEN_BYTES..buf_end]
+                )?;
+                return Ok(Some(decoded))
+            }
+        }
+        Ok(None)
+    }
 }
 
-
-// collection operations
-
-//TODO
-
-// impl Iterator<item=Middleman2> {
-// 	fn send_to_all::<M: Message>(self, m: &M) -> Result<(), SendError> {
-// 		let m_len = bincode::serialized_size(&m)?;
-// 		if m_len > ::std::u32::MAX as usize {
-//             return Err(SendError::TooBigToRepresent);
-//         }
-//         bincode::serialize_into(self.stream, m_len)?;
-// 		for mm in self {
-
-// 		}
-// 	}
-// }
-
 pub struct PackedMessage(Vec<u8>);
+impl PackedMessage {
+	pub fn unpack<M: Message>(&self) -> Result<M, Box<bincode::ErrorKind>> {
+        bincode::deserialize(&self.0[4..])
+	}
+}
+
 
 
 impl Evented for Middleman2     {

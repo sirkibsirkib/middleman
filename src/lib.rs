@@ -29,8 +29,8 @@ pub mod structs2;
 
 ////////////////////// TESTS ////////////////////
 
-#[cfg(test)]
-mod tests;
+// #[cfg(test)]
+// mod tests;
 
 #[cfg(test)]
 mod tests2;

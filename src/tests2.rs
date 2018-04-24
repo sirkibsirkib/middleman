@@ -40,6 +40,83 @@ const TOK_A: Token = Token(0);
 const TOK_B: Token = Token(1);
 const TOK_C: Token = Token(2);
 
+
+#[test]
+#[should_panic]
+fn not_ready() {
+    let mut events = Events::with_capacity(128);
+    let poll = Poll::new().unwrap();
+
+    let addr = start_echo_server();
+    let x = mio::net::TcpStream::connect(&addr).unwrap();
+    let mut client = Middleman2::new(x);
+
+    // no register has occured! the socket isn't ready
+    client.send(& Msg::Hello).expect("hope I don't panic! ;)");
+
+    // too late
+    poll.register(&client, TOK_A, Ready::readable() | Ready::writable(), PollOpt::edge()).unwrap();
+}
+
+#[test]
+fn is_ready() {
+    let handles = (0..40).map(|x| {
+        thread::spawn(move || {
+            let mut events = Events::with_capacity(128);
+            let poll = Poll::new().unwrap();
+
+            let addr = start_echo_server();
+            let x = mio::net::TcpStream::connect(&addr).unwrap();
+            let mut client = Middleman2::new(x);
+
+            // registered!
+            poll.register(&client, TOK_A, Ready::readable(), PollOpt::edge()).unwrap();
+
+            // socket should be ready to send
+            client.send(& Msg::Hello).expect("I shouldn't panic");
+        })
+    }).collect::<Vec<_>>();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+
+
+#[test]
+fn echo_client() {
+    let mut events = Events::with_capacity(128);
+    let poll = Poll::new().unwrap();
+
+    let addr = start_echo_server();
+    let x = mio::net::TcpStream::connect(&addr).unwrap();
+    let mut client = Middleman2::new(x);
+    poll.register(&client, TOK_A, Ready::readable(), PollOpt::edge()).unwrap();
+
+    // socket should be ready to send
+    client.send(& Msg::Hello).unwrap();
+    thread::sleep(Duration::from_millis(300));
+
+    let mut to_go = 5;
+    let x = Duration::from_millis(300);
+    loop {
+        poll.poll(&mut events, Some(x)).unwrap();
+        for event in events.iter() {
+            client.recv_all_map::<_, Msg>(|me, msg| {
+                assert_eq!(&msg, &Msg::Hello);
+                me.send(& msg).unwrap();
+                to_go -= 1;
+            }).1.unwrap();
+
+            if to_go <= 0 {
+                return;
+            }
+        }
+    }
+    //passed the test
+}
+
 #[test]
 fn count_together() {
     let (mut a, mut b) = connected_pair();
@@ -47,7 +124,7 @@ fn count_together() {
     let mut events = Events::with_capacity(128);
     poll.register(&a, TOK_A, Ready::readable(), PollOpt::edge()).unwrap();
     poll.register(&b, TOK_B, Ready::readable(), PollOpt::edge()).unwrap();
-    a.send(& Msg::Number(0)).ok();
+    a.send(& Msg::Number(0)).unwrap();
 
     let mut cont = true;
 
@@ -60,13 +137,13 @@ fn count_together() {
                     cont = false;
                     return;
                 }
-                mm.send(& Msg::Number(n + 1)).ok();
+                mm.send(& Msg::Number(n + 1)).unwrap();
             } else {
                 panic!()
             }
         };
 
-        poll.poll(&mut events, None).ok();
+        poll.poll(&mut events, None).unwrap();
 
         for event in events.iter() {
             match event.token() {
@@ -78,6 +155,13 @@ fn count_together() {
     }
 }
 
+// #[test]
+// fn l
+//     let mut events = Events::with_capacity(128);
+//     let poll = Poll::new().unwrap();
+
+//     let addr = start_echo_server();
+// }
 
 
 #[test]
@@ -89,7 +173,7 @@ fn recv_blocking() {
     let mut events = Events::with_capacity(128);
     poll.register(&a, TOK_A, Ready::readable(), PollOpt::edge()).unwrap();
 
-    a.send(& Msg::Hello).ok();
+    a.send(& Msg::Hello).unwrap();
 
     let bogus = Msg::Greetings(format!("What shall we do with the drunken sailor?"));
 
@@ -98,16 +182,16 @@ fn recv_blocking() {
 
     let mut rounds = 0;
     while rounds < 20 {
-        poll.poll(&mut events, None).ok();
+        poll.poll(&mut events, None).unwrap();
         for event in events.iter().chain(spillover.drain(..)) {
-            a.recv_all_into::<Msg>(&mut storage).1.ok();
+            a.recv_all_into::<Msg>(&mut storage).1.unwrap();
         }
 
         for msg in storage.drain(..) {
             assert_eq!(&msg, &Msg::Hello);
 
             for _ in 0..3 {
-                a.send(& bogus).ok();
+                a.send(& bogus).unwrap();
             }
 
             for _ in 0..3 {
@@ -116,7 +200,7 @@ fn recv_blocking() {
                 assert_eq!(&got, &bogus);
             }
 
-            a.send(& Msg::Hello).ok();
+            a.send(& Msg::Hello).unwrap();
             rounds += 1;
         }
     }
@@ -138,17 +222,17 @@ fn send_a_lot() {
         1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop\
         publishing software like Aldus PageMaker including versions of Lorem Ipsum."));
 
-    let total = 1000;
+    let total = 300;
     for i in 1..total+1 {
-        a.send(& msg).ok();
+        a.send(& msg).unwrap();
     }
 
     let mut count = 0;
     let mut storage = vec![];
     loop {
-        poll.poll(&mut events, None).ok();
+        poll.poll(&mut events, None).unwrap();
         for event in events.iter() {
-            a.recv_all_into::<Msg>(&mut storage).1.ok();
+            a.recv_all_into::<Msg>(&mut storage).1.unwrap();
         }
 
         for _msg in storage.drain(..) {
@@ -183,12 +267,12 @@ fn simple_packed() {
 
     let total = 1;
     for _ in 0..total {
-        a.send_packed(& packed).ok();
+        a.send_packed(& packed).unwrap();
     }
 
     let mut to_go = total;
     while to_go > 0 {
-        poll.poll(&mut events, None).ok();
+        poll.poll(&mut events, None).unwrap();
         for event in events.iter() {
             a.recv_all_map::<_, Complex>(|mm, msg| {
                 to_go -= 1;
@@ -199,8 +283,7 @@ fn simple_packed() {
 
 
 #[test]
-fn many_packed() {
-
+fn packed_best_case() {
     let (mut a1, b1) = connected_pair();
     let (mut a2, b2) = connected_pair();
     let (mut a3, b3) = connected_pair();
@@ -228,31 +311,9 @@ fn many_packed() {
     {// PACKED SENDING MODE
         let packed = Middleman2::pack_message(& struct_form).unwrap();
         for i in 0..total {
-            a1.send_packed(& packed).ok();
-            a2.send_packed(& packed).ok();
-            a3.send_packed(& packed).ok();
-        }
-
-        let (mut x, mut y, mut z) = (total, total, total); // "to go" counters
-        loop {
-            poll.poll(&mut events, None).ok();
-            for event in events.iter() {
-                match event.token() {
-                    TOK_A => a1.recv_all_map::<_, Complex>(|_mm, _msg| {
-                        x -= 1;
-                    }),
-                    TOK_B => a2.recv_all_map::<_, Complex>(|_mm, _msg| {
-                        y -= 1;
-                    }),
-                    TOK_C => a3.recv_all_map::<_, Complex>(|_mm, _msg| {
-                        z -= 1;
-                    }),
-                    _ => unreachable!(),
-                };
-            }
-            if (x,y,z) == (0,0,0) {
-                break; //work done
-            }
+            a1.send_packed(& packed).unwrap();
+            a2.send_packed(& packed).unwrap();
+            a3.send_packed(& packed).unwrap();
         }
     }
     let time_1 = start_1.elapsed();
@@ -261,36 +322,16 @@ fn many_packed() {
     let start_2 = Instant::now();
     {// NORMAL SENDING MODE
         for i in 0..total {
-            a1.send(& struct_form).ok();
-            a2.send(& struct_form).ok();
-            a3.send(& struct_form).ok();
-        }
-
-        let (mut x, mut y, mut z) = (total, total, total); // "to go" counters
-        loop {
-            poll.poll(&mut events, None).ok();
-            for event in events.iter() {
-                match event.token() {
-                    TOK_A => a1.recv_all_map::<_, Complex>(|_mm, _msg| {
-                        x -= 1;
-                    }),
-                    TOK_B => a2.recv_all_map::<_, Complex>(|_mm, _msg| {
-                        y -= 1;
-                    }),
-                    TOK_C => a3.recv_all_map::<_, Complex>(|_mm, _msg| {
-                        z -= 1;
-                    }),
-                    _ => unreachable!(),
-                };
-            }
-            if (x,y,z) == (0,0,0) {
-                break; //work done
-            }
+            a1.send(& struct_form).unwrap();
+            a2.send(& struct_form).unwrap();
+            a3.send(& struct_form).unwrap();
         }
     }
     let time_2 = start_2.elapsed();
     println!("packed: {:?}\nnormal: {:?}\nPacked took {}% of normal",
                 time_1, time_2, nanos(time_1) * 100 / nanos(time_2));
+
+    assert!(time_1 <= time_2);
 }
 
 fn nanos(dur: Duration) -> u64 {
@@ -298,7 +339,9 @@ fn nanos(dur: Duration) -> u64 {
     + dur.subsec_nanos() as u64
 } 
 
-//////////////////////////////////////////////
+
+
+////////////////////////////////////////////
 
 
 fn echo_forever_threaded<M: Message + Debug>(mut mm: Middleman2) {
@@ -308,12 +351,12 @@ fn echo_forever_threaded<M: Message + Debug>(mut mm: Middleman2) {
         poll.register(&mm, TOK_A, Ready::readable(), PollOpt::edge()).unwrap();
 
         loop {
-            poll.poll(&mut events, None).ok();
+            poll.poll(&mut events, None).unwrap();
             for event in events.iter() {
                 loop {
                     match mm.recv::<M>() {
                         Ok(None) => break,
-                        Ok(Some(msg)) => { mm.send(& msg).ok(); },
+                        Ok(Some(msg)) => { mm.send(& msg).unwrap(); },
                         Err(_) => panic!("echoer crashed!"), 
                     }
                 }
@@ -335,11 +378,100 @@ fn connected_pair() -> (Middleman2, Middleman2) {
             let a = listener.accept().unwrap().0;
             let b = handle.join().unwrap();
 
-            a.set_nodelay(true).ok();
-            b.set_nodelay(true).ok();
-
+            a.set_nodelay(true).unwrap();
+            b.set_nodelay(true).unwrap();
+            let (a, b) = (
+                mio::tcp::TcpStream::from_stream(a).unwrap(),
+                mio::tcp::TcpStream::from_stream(b).unwrap(),
+            );
             return (Middleman2::new(a), Middleman2::new(b))
         }
     }
     panic!("No ports left!")
+}
+
+fn avail_token<T>(m: &HashMap<Token, T>) -> Token {
+    for token in (1..).map(|x| Token(x)) {
+        if !m.contains_key(&token) {
+            return token
+        }
+    }
+    panic!("no more tokens to give!");
+}
+
+fn start_echo_server() -> SocketAddr {
+    for port in 200..16000 {
+        let addr = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            port,
+        );
+        if let Ok(listener) = mio::net::TcpListener::bind(&addr) {
+            // println!("Echo server bound to port {:?}", port);
+            thread::spawn(move || {
+                let poll = Poll::new().unwrap();
+                let mut buf = [0u8; 512];
+                let mut events = Events::with_capacity(128);
+                poll.register(&listener, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+                let mut streams: HashMap<Token, mio::net::TcpStream> = HashMap::new();
+                loop {
+                    // println!("echo poll start");
+                    poll.poll(&mut events, None).unwrap();
+                    // println!("echo poll end");
+                    for event in events.iter() {
+                        match event.token() {
+                            Token(0) => {
+                                // println!("listener event");
+                                // add a new client
+                                let (stream, _addr) = listener.accept().unwrap();
+                                let client_token = avail_token(&streams);
+                                poll.register(&stream, client_token, Ready::readable() | Ready::writable(),
+                                        PollOpt::edge()).unwrap();
+                                streams.insert(client_token, stream);
+                                // println!("Registering new client with token {:?}", client_token);
+                            },
+                            token => {
+                                // println!("echo client did a thing");
+                                // handle update for an existing client
+                                let mut remove = false;
+                                {
+                                    let mut stream = streams.get_mut(&token).unwrap();
+                                    loop {
+                                        use std::io::ErrorKind::WouldBlock;
+                                        use std::io::{Read, Write};
+
+                                        match stream.read(&mut buf[..]) {
+                                            Err(ref e) if e.kind() == WouldBlock => break,
+                                            Ok(bytes) => {
+                                                // println!("Bouncing {:?} bytes for client with token {:?}",
+                                                //             bytes, token);
+                                                // println!("bouncing {:?}", &buf[..bytes]);
+                                                if let Err(_) = stream.write_all(&buf[..bytes]) {
+                                                    remove = true;
+                                                    poll.deregister(stream).unwrap();
+                                                    break;
+                                                }
+                                                // println!("bounced!");
+                                            },
+                                            Err(_) => {
+                                                remove = true;
+                                                poll.deregister(stream).unwrap();
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if remove {
+                                    streams.remove(&token);
+                                    // println!("Removing client with token {:?}", token);
+                                }
+                            },
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+            });
+            return addr;
+        }
+    }
+    panic!("NO PORTS");
 }
