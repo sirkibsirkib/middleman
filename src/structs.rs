@@ -3,7 +3,7 @@ use super::*;
 use mio::{
     *,
     event::Evented,
-    tcp::TcpStream,
+    net::TcpStream,
 };
 
 use ::std::{
@@ -33,9 +33,9 @@ use byteorder::{
 pub struct Middleman {
     stream: TcpStream,
     buf: Vec<u8>,
+    to_send: Vec<u8>,
     buf_occupancy: usize,
     payload_bytes: Option<u32>,
-    to_send: Vec<u8>,
     write_ready: bool,
 }
 
@@ -55,10 +55,10 @@ impl Middleman {
     pub fn new(stream: TcpStream) -> Middleman {
         Self {
             stream: stream,
-            buf: vec![],
+            buf: Vec::with_capacity(256),
+            to_send: Vec::with_capacity(256),
             buf_occupancy: 0,
             payload_bytes: None,
-            to_send: vec![],
             write_ready: false,
         }
     }

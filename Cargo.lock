@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "middleman"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bincode 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "byteorder 1.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
