@@ -23,15 +23,13 @@ pub use traits::{
 };
 
 mod structs;
-pub use structs::Middleman;
-
-pub mod structs2;
+pub use structs::{
+	Middleman,
+	PackedMessage,
+};
 
 ////////////////////// TESTS ////////////////////
 
-// #[cfg(test)]
-// mod tests;
-
 #[cfg(test)]
-mod tests2;
+mod tests;
 
