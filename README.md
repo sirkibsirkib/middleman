@@ -33,6 +33,17 @@ Old versions of `middleman` stopped there. This always presented the problem: Wh
     1. Define which message types you wish to send over the network (called 'T' in the description above).
     1. Make these structures serializable with `serde`. I would suggest relying on the macros in `serde_derive`.
     1. Implement the marker trait `middleman::Message` for your messages.
+    All in all it may leave things looking like this: 
+    ```rust
+    #[derive(Serialize, Deserialize)]
+    enum MyMsg {
+        SayHello,
+        SendGameState(Box<GameState>),
+        Coordinate(f32, f32),
+        ...
+    }
+    impl middleman::Message for MyMsg {}
+    ```
 1. Setup your mio loop
     1. For each participant, somehow acquire a `mio::net::TcpStream` object connected to the relevant peer(s). This is stuff not unique to `middleman`.
     1. Wrap each tcp stream in a `Middleman`. 
