@@ -15,6 +15,7 @@ mod errors;
 pub use errors::{
     SendError,
     RecvError,
+    PackingError,
 };
 
 mod traits;

@@ -1,11 +1,9 @@
 use super::structs::Middleman;
 use super::*;
 
-
 use mio::*;
 
 use ::std::{
-    fmt::Debug,
     time::{
         Duration,
         Instant,
@@ -86,7 +84,9 @@ fn echo_client_std() {
     });
 }
 
-#[test]
+// #[test]
+// SOMETIMES doesn't complete! Writing to the socket before its ready leads the poll() call to hang
+#[allow(dead_code)]
 fn echo_client_mio() {
     echo_client(|addr| {
         mio::net::TcpStream::connect(&addr).unwrap()
@@ -170,6 +170,30 @@ fn safe_echo_client() {
 }
 
 #[test]
+fn single_send_recv() {
+    let (mut a, mut b) = connected_pair();
+    let poll = Poll::new().unwrap();
+    let mut events = Events::with_capacity(128);
+    poll.register(&a, TOK_A, Ready::readable(), PollOpt::edge()).unwrap();
+    poll.register(&b, TOK_B, Ready::readable(), PollOpt::edge()).unwrap();
+
+    a.send(& Msg::Number(0)).unwrap();
+    poll.poll(&mut events, None).unwrap();
+
+    for event in events.iter() {
+        match event.token() {
+            TOK_A => (),
+            TOK_B => {
+                if let Some(_msg) = b.recv::<Msg>().expect("Err") {
+                    break;
+                }
+            },
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
 fn count_together() {
     let (mut a, mut b) = connected_pair();
     let poll = Poll::new().unwrap();
@@ -207,19 +231,10 @@ fn count_together() {
     }
 }
 
-// #[test]
-// fn l
-//     let mut events = Events::with_capacity(128);
-//     let poll = Poll::new().unwrap();
-
-//     let addr = start_echo_server();
-// }
-
-
 #[test]
 fn recv_blocking() {
     let (mut a, b) = connected_pair();
-    echo_forever_threaded::<Msg>(b);
+    echo_forever_threaded(b);
 
     let poll = Poll::new().unwrap();
     let mut events = Events::with_capacity(128);
@@ -261,7 +276,7 @@ fn recv_blocking() {
 #[test]
 fn send_a_lot() {
     let (mut a, b) = connected_pair();
-    echo_forever_threaded::<Msg>(b);
+    echo_forever_threaded(b);
 
     let poll = Poll::new().unwrap();
     let mut events = Events::with_capacity(128);
@@ -303,7 +318,7 @@ impl Message for Complex {}
 #[test]
 fn simple_packed() {
     let (mut a, b) = connected_pair();
-    echo_forever_threaded::<Complex>(b);
+    echo_forever_threaded(b);
 
     let poll = Poll::new().unwrap();
     let mut events = Events::with_capacity(128);
@@ -315,7 +330,7 @@ fn simple_packed() {
         (-32, false, [5, 3, 9], ()),
         ([true, false, false, false, true], vec![[22,22], [0,4], [8,3]])
     );
-    let packed = Middleman::pack_message(& struct_form).unwrap();
+    let packed = PackedMessage::new(& struct_form).unwrap();
 
     let total = 1;
     for _ in 0..total {
@@ -340,9 +355,9 @@ fn packed_best_case() {
     let (mut a1, b1) = connected_pair();
     let (mut a2, b2) = connected_pair();
     let (mut a3, b3) = connected_pair();
-    echo_forever_threaded::<Complex>(b1);
-    echo_forever_threaded::<Complex>(b2);
-    echo_forever_threaded::<Complex>(b3);
+    echo_forever_threaded(b1);
+    echo_forever_threaded(b2);
+    echo_forever_threaded(b3);
 
     let poll = Poll::new().unwrap();
     let mut _events = Events::with_capacity(128);
@@ -362,7 +377,7 @@ fn packed_best_case() {
 
     let start_1 = Instant::now();
     {// PACKED SENDING MODE
-        let packed = Middleman::pack_message(& struct_form).unwrap();
+        let packed = PackedMessage::new(& struct_form).unwrap();
         for _ in 0..total {
             a1.send_packed(& packed).unwrap();
             a2.send_packed(& packed).unwrap();
@@ -395,24 +410,50 @@ fn nanos(dur: Duration) -> u64 {
 
 
 ////////////////////////////////////////////
+#[allow(dead_code)]
+fn nice_echo_server(addr: &SocketAddr) -> Result<(), std::io::Error> {
+    let mut events = Events::with_capacity(128);
+    let poll = Poll::new().unwrap();
+    let mut clients = HashMap::new();
+    let listener = mio::net::TcpListener::bind(addr).expect("bind failed");
+    poll.register(&listener, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+    let mut next = 1;
+    loop {
+        poll.poll(&mut events, None).unwrap();
+        for event in events.iter() {
+            match event.token() {
+                Token(0) => { //listener token
+                    let (sock, _addr) = listener.accept().unwrap();
+                    let t = Token(next); next += 1;
+                    let mm = Middleman::new(sock);
+                    poll.register(&mm, t, Ready::readable(), PollOpt::edge()).unwrap();
+                    clients.insert(t, mm);
+                },
+                token => { //client token
+                    if clients.get_mut(&token).unwrap().recv_all_packed_map(|this, packed| {
+                        this.send_packed(& packed).unwrap();
+                    }).1.is_err() {
+                        poll.deregister(clients.get(&token).unwrap()).unwrap();
+                        clients.remove(&token);
+                    }
+                },
+            } 
+        }
+    }
 
+}
 
-fn echo_forever_threaded<M: Message + Debug>(mut mm: Middleman) {
+fn echo_forever_threaded(mut mm: Middleman) {
     thread::spawn(move || {
         let mut events = Events::with_capacity(128);
         let poll = Poll::new().unwrap();
         poll.register(&mm, TOK_A, Ready::readable(), PollOpt::edge()).unwrap();
-
         loop {
             poll.poll(&mut events, None).unwrap();
             for _event in events.iter() {
-                loop {
-                    match mm.recv::<M>() {
-                        Ok(None) => break,
-                        Ok(Some(msg)) => { mm.send(& msg).unwrap(); },
-                        Err(_) => panic!("echoer crashed!"), 
-                    }
-                }
+                if mm.recv_all_packed_map(|this, packed| {
+                    this.send_packed(& packed).unwrap();
+                }).1.is_err() { return }
             }
         }
     });
@@ -443,14 +484,20 @@ fn connected_pair() -> (Middleman, Middleman) {
     panic!("No ports left!")
 }
 
+const LISTENER_TOKEN: Token = Token(0);
+
 fn avail_token<T>(m: &HashMap<Token, T>) -> Token {
-    for token in (1..).map(|x| Token(x)) {
+    // avoid listener token
+    let l = LISTENER_TOKEN.0;
+    for token in (0..l).chain((l+1)..).map(|x| Token(x)) {
         if !m.contains_key(&token) {
             return token
         }
     }
     panic!("no more tokens to give!");
 }
+
+
 
 fn start_echo_server() -> SocketAddr {
     for port in 200..16000 {
@@ -459,28 +506,23 @@ fn start_echo_server() -> SocketAddr {
             port,
         );
         if let Ok(listener) = mio::net::TcpListener::bind(&addr) {
-            // println!("Echo server bound to port {:?}", port);
             thread::spawn(move || {
                 let poll = Poll::new().unwrap();
                 let mut buf = [0u8; 512];
                 let mut events = Events::with_capacity(128);
-                poll.register(&listener, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+                poll.register(&listener, LISTENER_TOKEN, Ready::readable(), PollOpt::edge()).unwrap();
                 let mut streams: HashMap<Token, mio::net::TcpStream> = HashMap::new();
                 loop {
-                    // println!("echo poll start");
                     let _ = poll.poll(&mut events, None);
-                    // println!("echo poll end");
                     for event in events.iter() {
                         match event.token() {
-                            Token(0) => {
-                                // println!("listener event");
+                            LISTENER_TOKEN => {
                                 // add a new client
                                 let (stream, _addr) = listener.accept().unwrap();
                                 let client_token = avail_token(&streams);
                                 poll.register(&stream, client_token, Ready::readable() | Ready::writable(),
                                         PollOpt::edge()).unwrap();
                                 streams.insert(client_token, stream);
-                                // println!("Registering new client with token {:?}", client_token);
                             },
                             token => {
                                 // println!("echo client did a thing");

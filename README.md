@@ -21,64 +21,85 @@
  struct M: Message 
 ```
 
-## (Send+Recv) vs (Read+Write)
-The _meat and potatoes_ of this library is the `Middleman` structure. Internally, it is a little state machine that stores incoming and outgoing bytes in small buffers.
+## Using it yourself
+If you want to build some kind of Tcp-based network program, you'll need to do a few things. Many of these are in common with `mio`, but let's start somewhere. For our example, I will consider the case of setting up a single client-server connection for a baseline.
 
-At the _lower_ layer, the Middleman interacts at byte-granularity with the `mio::TcpStream` wrapped within. Read and write operations must be nested inside the mio event loop to make good use of the polling mechanism. As such, this layer is the _real_ connection between the Middleman and the outside world.
+Before we begin, this is at the core of what you _conceptually_ want on either end of a communication link:
+* One `Middleman` that exposes functions `send(&T)` and `recv() -> Option<T>`, where `T` is the type of the message structure(s) you wish to send over the network. Easy.
 
-At the _upper_ layer, the Middleman allows the user to _send and receive_ messages (structs). These operations have nothing to do with `mio`, and instead perform serialization/deserialization and change the state of the Middleman. Neither of these operations block.
+Old versions of `middleman` stopped there. However, to work with the (lovely) library `mio` and all its select-loop glory, some further steps are 
 
-### Typical Layout
-Below is a skeleton for the expected use case of a `Middleman`. Creation of the `Poll` and `Event` objects (typical mio stuff) is omitted.
 
-```rust
-const CLIENT: Token = Token(0);
-...
-let mut mm = Middleman::new(mio_tcp_stream);
-poll.register(&mm, CLIENT, Ready::readable() | Ready::writable(), PollOpt::edge())
-    .expect("failed to register!");
+1. Setup your messages
+    1. Define which message types you wish to send over the network (called 'T' in the description above).
+    1. Make these structures serializable with `serde`. I would suggest relying on the macros in `serde_derive`.
+    1. Implement the marker trait `middleman::Message` for your messages.
+1. Setup your mio loop
+    1. For each participant, somehow acquire a `mio::net::TcpStream` object connected to the relevant peer(s). This is stuff not unique to `middleman`.
+    1. Wrap each tcp stream in a `Middleman`. 
+    1. Register your middlemen with their respective `Poll` objects (as you would with the `mio::TcpStream` itself).
+    1. Inside the mio poll loop, call some variant of `Middleman::recv` at the appropriate time. Your job is to ensure that you _always drain all the waiting messages_. `recv` will never block, so feel free to spuriously try and recv something.
+    1. use your middlemen to `send` as necessary.
 
-let mut incoming: Vec<TestMsg> = vec![];
-loop {    
-    poll.poll(&mut events, None).ok();
+That's it. The flow isnt' very different from that of the typical Tcp setting. The dance simply involves linking up your TcpStream, Middleman, and `mio::Poll` objects into a nice bundle such that you can treat
+
+## Where Mio ends and Middleman begins
+When implementing high level algorithms, one likes to think not of _bytes_ and _packets_, but rather of discrete _messages_. Enums and Structs are more neat mappings to these theoretical constructs than byte sequences are. Middleman aims to hide all the byte-level stuff, but hide nothing more.
+
+Someone familiar with the use of `mio` for using the select-loop-like construct to poll the progress of one or more `Evented` structures will see the use of `middleman` doesn't change much. 
+
+At a high level, your code may look something like this:
+```
+
+let poll = ...
+... // setup other mio stuff
+let mut mm = Middleman::new(tcp_stream);
+poll.register(&mm, MIDDLEMAN_TOK, ...).unwrap();
+
+loop {
+    poll.poll(&mut events, ... ).unwrap();
     for event in events.iter() {
         match event.token() {
-            MIO_TOKEN => mm.read_write(&event).ok(),
+            MIDDLEMAN_TOK => {
+                if mm.recv_all_map<_, MyType>(|mm_ref, msg| {
+                    // do something with `msg`
+                }).1.is_err() {
+                    // handle errors
+                }
+            },
+            ...
             _ => unreachable!(),
         }
     }
-    
-    mm.try_recv_all(&mut incoming).1.ok();
-    for _msg in incoming.drain(..) {
-        // do stuff here
-    }
 }
-```
 
-Thanks to `poll.poll(...)`, the loop blocks whenever there is nothing new to do, but is triggered the instant something changes with the state of the Middleman.
+```
+There are ways of approaching how to precisely get at the messages, when to deserialize them and what to do next,
+but this is the crux of it: When you get a notification from _poll_, you try to read all waiting messages and handle them. That's it. At any point you can send a message the other way using `mm.send::<MyType>(& msg)`. No extra threads are needed. No busy-waiting spinning is required (thanks to `mio::Poll`).
 
 ## The special case of `recv_blocking`
-`mio` is asynchronous and non-blocking by nature. However, sometimes a blocking receive is a more ergonomic fit (in cases where exactly one message is eventually expected, for example). As a mio `poll()` may actually _do work_ lazily, this blocking recv requires an alteration in control flow. 
+`mio` is asynchronous and non-blocking by nature. However, sometimes a blocking receive is a more ergonomic fit, for instance in cases where exactly one message is expected. Functions `recv_blocking` and `recv_blocking_solo` exist as a compact means of hijacking the polling loop flow temporarily until a message is ready. See the documentation for more details and see the tests for some examples. 
 
-To facilitate this, the function `recv_blocking` requires some extra arguments:
+## A note on message size
+This library concentrates on flexibility. Messages of the same type can be represented with different sizes at runtime (eg: an empty hashmap takes fewer bytes than a full one). At the end of the day, the size of your enums on the network may be what you hope for. However, watch out for some pathelogical cases that are the result of the way Rust stores things in memory.
 
 ```rust
-...
-let mut spillover: Vec<Event> = vec![];
-loop {
-    poll.poll(&mut events, None).ok();
+#[derive(Serialize, Deserialize)]
+enum Large {
+    A([u64; 32]),
+    B(bool),
+}
+impl Message for Large {}
 
-    // need to also traverse events that may have been skimmed over during `recv_blocking` call
-    for _event in events.iter().chain(spillover.drain(..)) { 
-        mm.read_write(&event).ok();
-    }
-    ...
-    match mm.recv_blocking::<TestMsg>(&poll, &mut events, CLIENT,
-    	                              &mut spillover, None) {
-        Err(e)        => ... ,    
-        Ok(None)      => ... , // timed out
-        Ok(Some(msg)) => ... ,
-    }
+fn test() {
+    let packed = PackedMessage::new(& Large::B(true)).unwrap();
+    println!("packed bytes {:?}", packed.byte_len());
+    println!("memory bytes {:?}", ::std::mem::size_of::<Large>());
 }
 ```
-Note that now, each loop, we need to iterate over both _new_ events and also events that were consumed during a previous call to `recv_blocking`. The function works by temporarily hijacking the control flow of the event loop, and (in this way), buffering messages it encounters until it can use those that signal new bytes to read.
+
+will print
+```
+packed bytes 9
+memory bytes 264
+```
