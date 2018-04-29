@@ -52,7 +52,7 @@ Old versions of `middleman` stopped there. This always presented the problem: Wh
     1. Inside the mio poll loop, call some variant of `Middleman::recv` at the appropriate time. Your job is to ensure that you _always drain all the waiting messages_. `recv` will never block, so feel free to spuriously try and recv something.
     1. use your middlemen to `send` as necessary.
 
-That's it. The flow isnt' very different from that of the typical Tcp setting. The dance simply involves linking up your TcpStream, Middleman, and `mio::Poll` objects into a nice bundle such that you can treat
+That's it. The flow isnt' very different from that of the typical Tcp setting. The bulk of the work involves getting your Poll, Middleman and TcpStream objects to all work nicely together. For more detailed examples, see the [tests](https://github.com/sirkibsirkib/middleman/blob/master/src/tests.rs).
 
 ## Where Mio ends and Middleman begins
 When implementing high level algorithms, one likes to think not of _bytes_ and _packets_, but rather of discrete _messages_. Enums and Structs are more neat mappings to these theoretical constructs than byte sequences are. Middleman aims to hide all the byte-level stuff, but hide nothing more.
@@ -89,7 +89,7 @@ There are ways of approaching how to precisely get at the messages, when to dese
 but this is the crux of it: When you get a notification from _poll_, you try to read all waiting messages and handle them. That's it. At any point you can send a message the other way using `mm.send::<MyType>(& msg)`. No extra threads are needed. No busy-waiting spinning is required (thanks to `mio::Poll`).
 
 ## The special case of `recv_blocking`
-`mio` is asynchronous and non-blocking by nature. However, sometimes a blocking receive is a more ergonomic fit, for instance in cases where exactly one message is expected. Functions `recv_blocking` and `recv_blocking_solo` exist as a compact means of hijacking the polling loop flow temporarily until a message is ready. See the documentation for more details and see the tests for some examples. 
+`mio` is asynchronous and non-blocking by nature. However, sometimes a blocking receive is a more ergonomic fit, for instance in cases where exactly one message is expected. Functions `recv_blocking` and `recv_blocking_solo` exist as a compact means of hijacking the polling loop flow temporarily until a message is ready. See the documentation for more details and see the [tests](https://github.com/sirkibsirkib/middleman/blob/master/src/tests.rs) for some examples. 
 
 ## A note on message size
 This library concentrates on flexibility. Messages of the same type can be represented with different sizes at runtime (eg: an empty hashmap takes fewer bytes than a full one). At the end of the day, the size of your enums on the network may be what you hope for. However, watch out for some pathelogical cases that are the result of the way Rust stores things in memory.
