@@ -25,10 +25,9 @@
 If you want to build some kind of Tcp-based network program, you'll need to do a few things. Many of these are in common with `mio`, but let's start somewhere. For our example, I will consider the case of setting up a single client-server connection for a baseline.
 
 Before we begin, this is at the core of what you _conceptually_ want on either end of a communication link:
-* One `Middleman` that exposes functions `send(&T)` and `recv() -> Option<T>`, where `T` is the type of the message structure(s) you wish to send over the network. Easy.
+* One `Middleman` that exposes non-blocking functions `send(&T)` and `recv() -> Option<T>`, where `T` is the type of the message structure(s) you wish to send over the network. Easy.
 
-Old versions of `middleman` stopped there. However, to work with the (lovely) library `mio` and all its select-loop glory, some further steps are 
-
+Old versions of `middleman` stopped there. This always presented the problem: When should you call `recv`? The naive solution is just to keep calling it all the time. Thanksfully, `mio` exists to help with exactly that. It relies on polling to lazily do work and unblock when something can potentially progress. So here we see how to get this all working together smoothly:
 
 1. Setup your messages
     1. Define which message types you wish to send over the network (called 'T' in the description above).
