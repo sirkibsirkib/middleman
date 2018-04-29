@@ -60,8 +60,7 @@ When implementing high level algorithms, one likes to think not of _bytes_ and _
 Someone familiar with the use of `mio` for using the select-loop-like construct to poll the progress of one or more `Evented` structures will see the use of `middleman` doesn't change much. 
 
 At a high level, your code may look something like this:
-```
-
+```rust
 let poll = ...
 ... // setup other mio stuff
 let mut mm = Middleman::new(tcp_stream);
