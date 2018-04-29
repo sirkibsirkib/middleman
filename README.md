@@ -91,7 +91,7 @@ but this is the crux of it: When you get a notification from _poll_, you try to 
 `mio` is asynchronous and non-blocking by nature. However, sometimes a blocking receive is a more ergonomic fit, for cases where exactly one message is expected. Functions `recv_blocking` and `recv_blocking_solo` exist as a compact means of hijacking the polling loop flow temporarily until a message is ready. See the documentation for more details and see the [tests](https://github.com/sirkibsirkib/middleman/blob/master/src/tests.rs) for some examples. 
 
 ## A note on message size
-This library concentrates on flexibility. Messages of the same type can be represented with different sizes at runtime (eg: an empty hashmap takes fewer bytes than a full one). At the end of the day, the size of your enums on the network may be what you hope for. However, watch out for some pathelogical cases that are the result of the way Rust stores things in memory.
+This library concentrates on flexibility. Messages of the same type can be represented with different sizes at runtime (eg: an empty hashmap takes fewer bytes than a full one). You don't have much to fear as far as the byte-size of your messages are concerned, but still watch out for the effect some pathological cases may have on the size in memory.
 
 ```rust
 #[derive(Serialize, Deserialize)]
@@ -108,7 +108,7 @@ fn test() {
 }
 ```
 
-will print
+Calling `test` may print:
 ```
 packed bytes 9
 memory bytes 264
