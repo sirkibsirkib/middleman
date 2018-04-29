@@ -37,6 +37,7 @@ Old versions of `middleman` stopped there. This always presented the problem: Wh
     ```rust
     #[derive(Serialize, Deserialize)]
     enum MyMsg {
+        // some examples of variants. All irrelevant to `Middleman`
         SayHello,
         SendGameState(Box<GameState>),
         Coordinate(f32, f32),
