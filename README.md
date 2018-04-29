@@ -88,7 +88,7 @@ There are ways of approaching how to precisely get at the messages, when to dese
 but this is the crux of it: When you get a notification from _poll_, you try to read all waiting messages and handle them. That's it. At any point you can send a message the other way using `mm.send::<MyType>(& msg)`. No extra threads are needed. No busy-waiting spinning is required (thanks to `mio::Poll`).
 
 ## The special case of `recv_blocking`
-`mio` is asynchronous and non-blocking by nature. However, sometimes a blocking receive is a more ergonomic fit, for instance in cases where exactly one message is expected. Functions `recv_blocking` and `recv_blocking_solo` exist as a compact means of hijacking the polling loop flow temporarily until a message is ready. See the documentation for more details and see the [tests](https://github.com/sirkibsirkib/middleman/blob/master/src/tests.rs) for some examples. 
+`mio` is asynchronous and non-blocking by nature. However, sometimes a blocking receive is a more ergonomic fit, for cases where exactly one message is expected. Functions `recv_blocking` and `recv_blocking_solo` exist as a compact means of hijacking the polling loop flow temporarily until a message is ready. See the documentation for more details and see the [tests](https://github.com/sirkibsirkib/middleman/blob/master/src/tests.rs) for some examples. 
 
 ## A note on message size
 This library concentrates on flexibility. Messages of the same type can be represented with different sizes at runtime (eg: an empty hashmap takes fewer bytes than a full one). At the end of the day, the size of your enums on the network may be what you hope for. However, watch out for some pathelogical cases that are the result of the way Rust stores things in memory.
