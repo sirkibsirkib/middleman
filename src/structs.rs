@@ -53,6 +53,7 @@ impl Middleman {    fn check_payload(&mut self) {
                 self.buf.resize(limit, 0u8);
             }
             match self.stream.read(&mut self.buf[self.buf_occupancy..]) {
+                Ok(0) => return Ok(total),
                 Ok(bytes) => {
                     self.buf_occupancy += bytes;
                     total += bytes;
